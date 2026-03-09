@@ -1,7 +1,6 @@
 from flask import Flask
 import requests
 import yfinance as yf
-import pandas as pd
 import threading
 import time
 import os
@@ -22,48 +21,69 @@ NIFTY200 = [
 ]
 
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": msg}
-    requests.post(url, data=data)
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": msg}
+        requests.post(url, data=data)
+    except:
+        print("Telegram send failed")
 
 def scan_market():
+
     while True:
+
+        print("Scanning market...")
+
         for stock in NIFTY200:
+
             try:
-                data = yf.download(stock, period="1d", interval="5m")
+
+                data = yf.download(stock, period="1d", interval="5m", progress=False)
+
+                if data is None or data.empty:
+                    continue
 
                 if len(data) < 6:
                     continue
 
-                # Last 3 candles
                 c1 = data.iloc[-3]
                 c2 = data.iloc[-2]
                 c3 = data.iloc[-1]
 
-                # Candle colors
-                green1 = c1["Close"] > c1["Open"]
-                green2 = c2["Close"] > c2["Open"]
-                green3 = c3["Close"] > c3["Open"]
+                o1 = float(c1["Open"])
+                c1p = float(c1["Close"])
+                v1 = float(c1["Volume"])
 
-                red1 = c1["Close"] < c1["Open"]
-                red2 = c2["Close"] < c2["Open"]
-                red3 = c3["Close"] < c3["Open"]
+                o2 = float(c2["Open"])
+                c2p = float(c2["Close"])
+                v2 = float(c2["Volume"])
 
-                # LONG pattern
-                if green1 and green2 and red3:
-                    if c3["Volume"] < c1["Volume"] and c3["Volume"] < c2["Volume"]:
+                o3 = float(c3["Open"])
+                c3p = float(c3["Close"])
+                v3 = float(c3["Volume"])
 
-                        entry = c3["High"]
-                        stop = c3["Low"]
-                        risk = entry - stop
+                green1 = c1p > o1
+                green2 = c2p > o2
+                green3 = c3p > o3
 
-                        if risk == 0:
-                            continue
+                red1 = c1p < o1
+                red2 = c2p < o2
+                red3 = c3p < o3
 
-                        target = entry + (risk * 2)
-                        position_size = int(5000 / risk)
+                # LONG SETUP
+                if green1 and green2 and red3 and v3 < v1 and v3 < v2:
 
-                        msg = f"""
+                    entry = float(c3["High"])
+                    stop = float(c3["Low"])
+                    risk = entry - stop
+
+                    if risk <= 0:
+                        continue
+
+                    target = entry + (risk * 2)
+                    position_size = int(5000 / risk)
+
+                    msg = f"""
 🚀 LONG SETUP
 
 Stock: {stock}
@@ -75,23 +95,22 @@ Target: {round(target,2)}
 Position Size: {position_size} shares
 """
 
-                        send_telegram(msg)
+                    send_telegram(msg)
 
-                # SHORT pattern
-                if red1 and red2 and green3:
-                    if c3["Volume"] < c1["Volume"] and c3["Volume"] < c2["Volume"]:
+                # SHORT SETUP
+                if red1 and red2 and green3 and v3 < v1 and v3 < v2:
 
-                        entry = c3["Low"]
-                        stop = c3["High"]
-                        risk = stop - entry
+                    entry = float(c3["Low"])
+                    stop = float(c3["High"])
+                    risk = stop - entry
 
-                        if risk == 0:
-                            continue
+                    if risk <= 0:
+                        continue
 
-                        target = entry - (risk * 2)
-                        position_size = int(5000 / risk)
+                    target = entry - (risk * 2)
+                    position_size = int(5000 / risk)
 
-                        msg = f"""
+                    msg = f"""
 🔻 SHORT SETUP
 
 Stock: {stock}
@@ -103,17 +122,16 @@ Target: {round(target,2)}
 Position Size: {position_size} shares
 """
 
-                        send_telegram(msg)
+                    send_telegram(msg)
 
             except Exception as e:
-                print(e)
+                print(f"Error with {stock}: {e}")
 
-        # Scan every 5 minutes
         time.sleep(300)
 
 @app.route("/")
 def home():
-    return "NIFTY Scanner Running"
+    return "Scanner running"
 
 def start_scanner():
     scan_market()
@@ -122,4 +140,4 @@ thread = threading.Thread(target=start_scanner)
 thread.start()
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=8080)
