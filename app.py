@@ -1,6 +1,7 @@
 from flask import Flask
 import requests
 import yfinance as yf
+import pandas as pd
 import threading
 import time
 import os
@@ -21,20 +22,15 @@ NIFTY200 = [
 ]
 
 def send_telegram(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": msg}
-        requests.post(url, data=data)
-    except:
-        print("Telegram send failed")
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": msg}
+    requests.post(url, data=data)
 
 def scan_market():
 
-    send_telegram("Bot is alive and scanning market")
+    send_telegram("✅ Scanner started successfully")
 
     while True:
-
-        print("Scanning market...")
 
         for stock in NIFTY200:
 
@@ -42,50 +38,54 @@ def scan_market():
 
                 data = yf.download(stock, period="1d", interval="5m", progress=False)
 
-                if data is None or data.empty:
+                if data.empty or len(data) < 3:
                     continue
 
-                if len(data) < 6:
-                    continue
-
+                # Last 3 candles
                 c1 = data.iloc[-3]
                 c2 = data.iloc[-2]
                 c3 = data.iloc[-1]
 
-                o1 = float(c1["Open"])
-                c1p = float(c1["Close"])
-                v1 = float(c1["Volume"])
+                open1 = float(c1["Open"])
+                close1 = float(c1["Close"])
 
-                o2 = float(c2["Open"])
-                c2p = float(c2["Close"])
-                v2 = float(c2["Volume"])
+                open2 = float(c2["Open"])
+                close2 = float(c2["Close"])
 
-                o3 = float(c3["Open"])
-                c3p = float(c3["Close"])
-                v3 = float(c3["Volume"])
+                open3 = float(c3["Open"])
+                close3 = float(c3["Close"])
 
-                green1 = c1p > o1
-                green2 = c2p > o2
-                green3 = c3p > o3
+                vol1 = float(c1["Volume"])
+                vol2 = float(c2["Volume"])
+                vol3 = float(c3["Volume"])
 
-                red1 = c1p < o1
-                red2 = c2p < o2
-                red3 = c3p < o3
+                high3 = float(c3["High"])
+                low3 = float(c3["Low"])
 
-                # LONG SETUP
-                if green1 and green2 and red3 and v3 < v1 and v3 < v2:
+                green1 = close1 > open1
+                green2 = close2 > open2
+                red3 = close3 < open3
 
-                    entry = float(c3["High"])
-                    stop = float(c3["Low"])
-                    risk = entry - stop
+                red1 = close1 < open1
+                red2 = close2 < open2
+                green3 = close3 > open3
 
-                    if risk <= 0:
-                        continue
+                # LONG setup
+                if green1 and green2 and red3:
 
-                    target = entry + (risk * 2)
-                    position_size = int(5000 / risk)
+                    if vol3 < vol1 and vol3 < vol2:
 
-                    msg = f"""
+                        entry = high3
+                        stop = low3
+                        risk = entry - stop
+
+                        if risk <= 0:
+                            continue
+
+                        target = entry + (risk * 2)
+                        position_size = int(5000 / risk)
+
+                        msg = f"""
 🚀 LONG SETUP
 
 Stock: {stock}
@@ -97,22 +97,24 @@ Target: {round(target,2)}
 Position Size: {position_size} shares
 """
 
-                    send_telegram(msg)
+                        send_telegram(msg)
 
-                # SHORT SETUP
-                if red1 and red2 and green3 and v3 < v1 and v3 < v2:
+                # SHORT setup
+                if red1 and red2 and green3:
 
-                    entry = float(c3["Low"])
-                    stop = float(c3["High"])
-                    risk = stop - entry
+                    if vol3 < vol1 and vol3 < vol2:
 
-                    if risk <= 0:
-                        continue
+                        entry = low3
+                        stop = high3
+                        risk = stop - entry
 
-                    target = entry - (risk * 2)
-                    position_size = int(5000 / risk)
+                        if risk <= 0:
+                            continue
 
-                    msg = f"""
+                        target = entry - (risk * 2)
+                        position_size = int(5000 / risk)
+
+                        msg = f"""
 🔻 SHORT SETUP
 
 Stock: {stock}
@@ -124,16 +126,19 @@ Target: {round(target,2)}
 Position Size: {position_size} shares
 """
 
-                    send_telegram(msg)
+                        send_telegram(msg)
 
             except Exception as e:
-                print(f"Error with {stock}: {e}")
+
+                print("Error with", stock, ":", e)
+
+        print("Scanning market...")
 
         time.sleep(300)
 
 @app.route("/")
 def home():
-    return "Scanner running"
+    return "Scanner Running"
 
 def start_scanner():
     scan_market()
@@ -142,4 +147,4 @@ thread = threading.Thread(target=start_scanner)
 thread.start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run()
