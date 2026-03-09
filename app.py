@@ -7,8 +7,8 @@ import time
 
 app = Flask(__name__)
 
-TOKEN = "PASTE_YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "PASTE_YOUR_CHAT_ID"
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 NIFTY200 = [
 "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
