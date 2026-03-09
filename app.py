@@ -4,6 +4,8 @@ import yfinance as yf
 import pandas as pd
 import threading
 import time
+import os
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -12,7 +14,12 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 NIFTY200 = [
 "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
-"LT.NS","SBIN.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS"
+"LT.NS","SBIN.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS",
+"TATAMOTORS.NS","BAJFINANCE.NS","MARUTI.NS","ASIANPAINT.NS",
+"HCLTECH.NS","ULTRACEMCO.NS","SUNPHARMA.NS","TITAN.NS",
+"NESTLEIND.NS","POWERGRID.NS","ADANIENT.NS","ADANIPORTS.NS",
+"ONGC.NS","COALINDIA.NS","NTPC.NS","WIPRO.NS","TECHM.NS",
+"INDUSINDBK.NS","JSWSTEEL.NS","HINDALCO.NS"
 ]
 
 def send_telegram(msg):
@@ -24,7 +31,7 @@ def scan_market():
     while True:
         for stock in NIFTY200:
             try:
-                data = yf.download(stock, period="3mo", interval="1d")
+                data = yf.download(stock, period="1d", interval="5m")
 
                 data["MA20"] = data["Close"].rolling(20).mean()
                 data["MA50"] = data["Close"].rolling(50).mean()
