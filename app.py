@@ -30,6 +30,8 @@ def send_telegram(msg):
 
 def scan_market():
 
+    send_telegram("Bot is alive and scanning market")
+
     while True:
 
         print("Scanning market...")
