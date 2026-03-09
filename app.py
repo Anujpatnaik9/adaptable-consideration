@@ -32,7 +32,7 @@ def send_telegram(msg):
 
 def scan_market():
 
-    send_telegram("✅ Scanner started")
+    send_telegram("✅ Scanner Started")
 
     while True:
 
@@ -56,25 +56,26 @@ def scan_market():
                 if len(df) < 3:
                     continue
 
-                c1 = df.iloc[0]
-                c2 = df.iloc[1]
-                c3 = df.iloc[2]
+                # SAFE value extraction
+                c1 = df.iloc[-3]
+                c2 = df.iloc[-2]
+                c3 = df.iloc[-1]
 
-                open1 = float(c1["Open"])
-                close1 = float(c1["Close"])
+                open1 = float(c1["Open"].item())
+                close1 = float(c1["Close"].item())
 
-                open2 = float(c2["Open"])
-                close2 = float(c2["Close"])
+                open2 = float(c2["Open"].item())
+                close2 = float(c2["Close"].item())
 
-                open3 = float(c3["Open"])
-                close3 = float(c3["Close"])
+                open3 = float(c3["Open"].item())
+                close3 = float(c3["Close"].item())
 
-                vol1 = float(c1["Volume"])
-                vol2 = float(c2["Volume"])
-                vol3 = float(c3["Volume"])
+                vol1 = float(c1["Volume"].item())
+                vol2 = float(c2["Volume"].item())
+                vol3 = float(c3["Volume"].item())
 
-                high3 = float(c3["High"])
-                low3 = float(c3["Low"])
+                high3 = float(c3["High"].item())
+                low3 = float(c3["Low"].item())
 
                 green1 = close1 > open1
                 green2 = close2 > open2
