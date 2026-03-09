@@ -5,7 +5,6 @@ import pandas as pd
 import threading
 import time
 import os
-from datetime import datetime
 
 app = Flask(__name__)
 
@@ -33,22 +32,88 @@ def scan_market():
             try:
                 data = yf.download(stock, period="1d", interval="5m")
 
-                data["MA20"] = data["Close"].rolling(20).mean()
-                data["MA50"] = data["Close"].rolling(50).mean()
+                if len(data) < 6:
+                    continue
 
-                last = data.iloc[-1]
+                # Last 3 candles
+                c1 = data.iloc[-3]
+                c2 = data.iloc[-2]
+                c3 = data.iloc[-1]
 
-                if last["MA20"] > last["MA50"]:
-                    send_telegram(f"BUY SIGNAL: {stock}")
+                # Candle colors
+                green1 = c1["Close"] > c1["Open"]
+                green2 = c2["Close"] > c2["Open"]
+                green3 = c3["Close"] > c3["Open"]
 
-            except:
-                pass
+                red1 = c1["Close"] < c1["Open"]
+                red2 = c2["Close"] < c2["Open"]
+                red3 = c3["Close"] < c3["Open"]
 
-        time.sleep(3600)
+                # LONG pattern
+                if green1 and green2 and red3:
+                    if c3["Volume"] < c1["Volume"] and c3["Volume"] < c2["Volume"]:
+
+                        entry = c3["High"]
+                        stop = c3["Low"]
+                        risk = entry - stop
+
+                        if risk == 0:
+                            continue
+
+                        target = entry + (risk * 2)
+                        position_size = int(5000 / risk)
+
+                        msg = f"""
+🚀 LONG SETUP
+
+Stock: {stock}
+
+Entry: {round(entry,2)}
+Stop Loss: {round(stop,2)}
+Target: {round(target,2)}
+
+Position Size: {position_size} shares
+"""
+
+                        send_telegram(msg)
+
+                # SHORT pattern
+                if red1 and red2 and green3:
+                    if c3["Volume"] < c1["Volume"] and c3["Volume"] < c2["Volume"]:
+
+                        entry = c3["Low"]
+                        stop = c3["High"]
+                        risk = stop - entry
+
+                        if risk == 0:
+                            continue
+
+                        target = entry - (risk * 2)
+                        position_size = int(5000 / risk)
+
+                        msg = f"""
+🔻 SHORT SETUP
+
+Stock: {stock}
+
+Entry: {round(entry,2)}
+Stop Loss: {round(stop,2)}
+Target: {round(target,2)}
+
+Position Size: {position_size} shares
+"""
+
+                        send_telegram(msg)
+
+            except Exception as e:
+                print(e)
+
+        # Scan every 5 minutes
+        time.sleep(300)
 
 @app.route("/")
 def home():
-    return "NIFTY200 Scanner Running"
+    return "NIFTY Scanner Running"
 
 def start_scanner():
     scan_market()
