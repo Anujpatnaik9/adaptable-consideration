@@ -1,7 +1,6 @@
 from flask import Flask
 import requests
 import yfinance as yf
-import pandas as pd
 import threading
 import time
 import os
@@ -17,7 +16,7 @@ RISK_PER_TRADE = 5000
 
 sent_alerts = set()
 
-# Fetch NIFTY 200 stocks automatically
+# Fetch NIFTY200 stocks
 def get_nifty200():
 
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200"
@@ -51,12 +50,12 @@ def send_telegram(message):
     try:
         requests.post(url, data=payload)
     except:
-        print("Telegram Error")
+        print("Telegram error")
 
 def calculate_vwap(df):
 
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
+    tp = (df['High'] + df['Low'] + df['Close']) / 3
+    vwap = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
 
     return vwap.iloc[-1]
 
@@ -73,6 +72,8 @@ def scan():
         if now.hour < 9 or now.hour > 15:
             time.sleep(60)
             continue
+
+        trade_list = []
 
         for stock in STOCKS:
 
@@ -94,22 +95,25 @@ def scan():
                 c2 = df.iloc[-2]
                 c3 = df.iloc[-1]
 
-                vol_avg = df["Volume"].mean()
-
-                rel_vol = c3["Volume"] / vol_avg
-
-                vwap = calculate_vwap(df)
-
                 open1, close1 = c1["Open"], c1["Close"]
                 open2, close2 = c2["Open"], c2["Close"]
                 open3, close3 = c3["Open"], c3["Close"]
+
+                vol1 = c1["Volume"]
+                vol2 = c2["Volume"]
+                vol3 = c3["Volume"]
+
+                vol_avg = df["Volume"].mean()
+
+                rel_vol = vol3 / vol_avg
+
+                vwap = calculate_vwap(df)
 
                 high3 = c3["High"]
                 low3 = c3["Low"]
 
                 green1 = close1 > open1
                 green2 = close2 > open2
-
                 red1 = close1 < open1
                 red2 = close2 < open2
 
@@ -119,7 +123,7 @@ def scan():
                 # LONG SETUP
                 if green1 and green2 and red3:
 
-                    if c3["Volume"] < c1["Volume"] and c3["Volume"] < c2["Volume"]:
+                    if vol3 < vol1 and vol3 < vol2:
 
                         if close3 > vwap and rel_vol >= 1.5:
 
@@ -131,16 +135,14 @@ def scan():
                             if risk <= 0:
                                 continue
 
-                            if stock in sent_alerts:
-                                continue
-
                             target = entry + (risk * 2)
 
                             qty = int(RISK_PER_TRADE / risk)
 
-                            probability = round(60 + (rel_vol * 10),1)
+                            score = rel_vol
 
-                            message = f"""
+                            trade_list.append(
+                                (score, f"""
 🚀 LONG TRADE
 
 Stock: {stock}
@@ -153,18 +155,13 @@ Position Size: {qty}
 
 Relative Volume: {round(rel_vol,2)}
 VWAP: {round(vwap,2)}
-
-Probability: {probability}%
-"""
-
-                            send_telegram(message)
-
-                            sent_alerts.add(stock)
+""")
+                            )
 
                 # SHORT SETUP
                 if red1 and red2 and green3:
 
-                    if c3["Volume"] < c1["Volume"] and c3["Volume"] < c2["Volume"]:
+                    if vol3 < vol1 and vol3 < vol2:
 
                         if close3 < vwap and rel_vol >= 1.5:
 
@@ -176,16 +173,14 @@ Probability: {probability}%
                             if risk <= 0:
                                 continue
 
-                            if stock in sent_alerts:
-                                continue
-
                             target = entry - (risk * 2)
 
                             qty = int(RISK_PER_TRADE / risk)
 
-                            probability = round(60 + (rel_vol * 10),1)
+                            score = rel_vol
 
-                            message = f"""
+                            trade_list.append(
+                                (score, f"""
 🔻 SHORT TRADE
 
 Stock: {stock}
@@ -198,19 +193,26 @@ Position Size: {qty}
 
 Relative Volume: {round(rel_vol,2)}
 VWAP: {round(vwap,2)}
-
-Probability: {probability}%
-"""
-
-                            send_telegram(message)
-
-                            sent_alerts.add(stock)
+""")
+                            )
 
             except Exception as e:
 
-                print("Error:", stock, e)
+                print("Error", stock, e)
 
-        print("Scanning market...")
+        trade_list.sort(reverse=True)
+
+        top_trades = trade_list[:10]
+
+        for trade in top_trades:
+
+            msg = trade[1]
+
+            if msg not in sent_alerts:
+
+                send_telegram(msg)
+
+                sent_alerts.add(msg)
 
         time.sleep(60)
 
