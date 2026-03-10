@@ -1,3 +1,4 @@
+
 from flask import Flask
 import requests
 import yfinance as yf
@@ -19,16 +20,9 @@ STOCKS=[
 "LT.NS","SBIN.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS",
 "TATAMOTORS.NS","BAJFINANCE.NS","MARUTI.NS","ASIANPAINT.NS",
 "HCLTECH.NS","ULTRACEMCO.NS","SUNPHARMA.NS","TITAN.NS",
-"NESTLEIND.NS","POWERGRID.NS","ADANIENT.NS","ADANIPORTS.NS",
-"ONGC.NS","COALINDIA.NS","NTPC.NS","WIPRO.NS","TECHM.NS",
-"INDUSINDBK.NS","JSWSTEEL.NS","HINDALCO.NS",
-"DIVISLAB.NS","BAJAJFINSV.NS","HEROMOTOCO.NS","EICHERMOT.NS",
-"BRITANNIA.NS","SHREECEM.NS","CIPLA.NS","GRASIM.NS",
-"TATACONSUM.NS","DRREDDY.NS","BPCL.NS","UPL.NS",
-"SIEMENS.NS","ABB.NS","DLF.NS","GODREJCP.NS",
-"PIDILITIND.NS","DABUR.NS","COLPAL.NS","INDIGO.NS",
-"HAVELLS.NS","NAUKRI.NS","PAYTM.NS","POLYCAB.NS",
-"TATAPOWER.NS","SAIL.NS","VEDL.NS"
+"NESTLEIND.NS","POWERGRID.NS","ONGC.NS","COALINDIA.NS",
+"NTPC.NS","WIPRO.NS","TECHM.NS","INDUSINDBK.NS","JSWSTEEL.NS",
+"HINDALCO.NS","DIVISLAB.NS","CIPLA.NS"
 ]
 
 def send_telegram(msg):
@@ -39,11 +33,12 @@ def send_telegram(msg):
     except:
         print("Telegram error")
 
+
 def get_nifty_trend():
 
     try:
 
-        df=yf.download("^NSEI",period="1d",interval="5m",progress=False)
+        df=yf.download("^NSEI",period="5d",interval="5m",progress=False)
 
         df["EMA20"]=df["Close"].ewm(span=20).mean()
 
@@ -51,18 +46,16 @@ def get_nifty_trend():
 
         if last["Close"]>last["EMA20"]:
             return "BULLISH"
-
         else:
             return "BEARISH"
 
     except:
-
         return "NEUTRAL"
+
 
 def candle_strength(candle):
 
     body=abs(candle["Close"]-candle["Open"])
-
     rng=candle["High"]-candle["Low"]
 
     if rng==0:
@@ -70,43 +63,39 @@ def candle_strength(candle):
 
     return body/rng>0.6
 
+
 def calculate_vwap(df):
 
     tp=(df["High"]+df["Low"]+df["Close"])/3
-
     vwap=(tp*df["Volume"]).cumsum()/df["Volume"].cumsum()
 
     return vwap.iloc[-1]
 
+
 def scan_market():
 
-    send_telegram("🚀 PRO NIFTY SCANNER STARTED")
+    send_telegram("🚀 3-CANDLE SCANNER STARTED")
 
     while True:
 
-        try:
+        now=datetime.now()
 
-            trend=get_nifty_trend()
-
-            data=yf.download(
-                tickers=" ".join(STOCKS),
-                period="1d",
-                interval="5m",
-                group_by="ticker",
-                progress=False
-            )
-
-        except:
-
+        if now.hour<9 or (now.hour==9 and now.minute<15) or now.hour>=16:
             time.sleep(60)
-
             continue
+
+        trend=get_nifty_trend()
 
         for stock in STOCKS:
 
             try:
 
-                df=data[stock].dropna()
+                df=yf.download(
+                    stock,
+                    period="5d",
+                    interval="5m",
+                    progress=False
+                ).dropna()
 
                 if len(df)<20:
                     continue
@@ -125,6 +114,13 @@ def scan_market():
                 if not candle_strength(c2):
                     continue
 
+                vol1=c1["Volume"]
+                vol2=c2["Volume"]
+                vol3=c3["Volume"]
+
+                if vol3>vol2:
+                    continue
+
                 open1,close1=c1["Open"],c1["Close"]
                 open2,close2=c2["Open"],c2["Close"]
                 open3,close3=c3["Open"],c3["Close"]
@@ -132,17 +128,15 @@ def scan_market():
                 high3=c3["High"]
                 low3=c3["Low"]
 
-                green1=close1>open1
-                green2=close2>open2
-                red3=close3<open3
+                signal_key=f"{stock}-{now.strftime('%H:%M')}"
 
-                red1=close1<open1
-                red2=close2<open2
-                green3=close3>open3
+                if signal_key in sent_signals:
+                    continue
+
 
                 if trend=="BULLISH":
 
-                    if green1 and green2 and red3 and close3>vwap:
+                    if close1>open1 and close2>open2 and close3<open3 and close3>vwap:
 
                         entry=high3
                         stop=low3
@@ -162,17 +156,20 @@ Entry: {round(entry,2)}
 Stop Loss: {round(stop,2)}
 Target: {round(target,2)}
 
-Market Trend: {trend}
+Trend: {trend}
 VWAP: Confirmed
 
-Time: {datetime.now().strftime('%H:%M')}
+Time: {now.strftime('%H:%M')}
 """
 
                         send_telegram(msg)
 
+                        sent_signals.add(signal_key)
+
+
                 if trend=="BEARISH":
 
-                    if red1 and red2 and green3 and close3<vwap:
+                    if close1<open1 and close2<open2 and close3>open3 and close3<vwap:
 
                         entry=low3
                         stop=high3
@@ -192,26 +189,31 @@ Entry: {round(entry,2)}
 Stop Loss: {round(stop,2)}
 Target: {round(target,2)}
 
-Market Trend: {trend}
+Trend: {trend}
 VWAP: Confirmed
 
-Time: {datetime.now().strftime('%H:%M')}
+Time: {now.strftime('%H:%M')}
 """
 
                         send_telegram(msg)
 
-            except:
-                continue
+                        sent_signals.add(signal_key)
+
+            except Exception as e:
+
+                print(stock,e)
 
         print("Scanning market...")
 
         time.sleep(60)
+
 
 @app.route("/")
 
 def home():
 
     return "Scanner Running"
+
 
 threading.Thread(target=scan_market,daemon=True).start()
 
