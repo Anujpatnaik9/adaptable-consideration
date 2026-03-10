@@ -1,18 +1,27 @@
-import os
+from flask import Flask
 import requests
-import time
+import os
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+app = Flask(__name__)
 
-def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-print("Bot started")
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": msg
+    })
 
-send("✅ SUCCESS: Railway deployment works and Telegram is connected")
+@app.route("/")
+def home():
+    return "Bot running"
 
-while True:
-    print("Bot running...")
-    time.sleep(60)
+if __name__ == "__main__":
+
+    print("Sending telegram test message...")
+
+    send_telegram("✅ BOT SUCCESSFULLY CONNECTED TO TELEGRAM")
+
+    app.run(host="0.0.0.0", port=8080)
