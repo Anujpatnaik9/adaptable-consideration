@@ -13,25 +13,31 @@ app = Flask(__name__)
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Capital settings
-CAPITAL = 500000
 RISK_PER_TRADE = 5000
 
-# NIFTY 200 LIQUID STOCKS
-STOCKS = [
-"RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
-"LT.NS","SBIN.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS",
-"TATAMOTORS.NS","BAJFINANCE.NS","MARUTI.NS","ASIANPAINT.NS",
-"HCLTECH.NS","ULTRACEMCO.NS","SUNPHARMA.NS","TITAN.NS",
-"NESTLEIND.NS","POWERGRID.NS","ADANIENT.NS","ADANIPORTS.NS",
-"ONGC.NS","COALINDIA.NS","NTPC.NS","WIPRO.NS","TECHM.NS",
-"INDUSINDBK.NS","JSWSTEEL.NS","HINDALCO.NS","DRREDDY.NS",
-"CIPLA.NS","DIVISLAB.NS","BRITANNIA.NS","HEROMOTOCO.NS",
-"EICHERMOT.NS","GRASIM.NS","TATACONSUM.NS","BPCL.NS",
-"SHREECEM.NS","SBILIFE.NS","BAJAJFINSV.NS","UPL.NS",
-"HAVELLS.NS","DABUR.NS","GODREJCP.NS","PIDILITIND.NS",
-"COLPAL.NS","AMBUJACEM.NS","ADANIGREEN.NS","ADANITRANS.NS"
-]
+sent_alerts = set()
+
+# Fetch NIFTY 200 stocks automatically
+def get_nifty200():
+
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200"
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    session = requests.Session()
+
+    session.get("https://www.nseindia.com", headers=headers)
+
+    data = session.get(url, headers=headers).json()
+
+    stocks = []
+
+    for item in data["data"]:
+        stocks.append(item["symbol"] + ".NS")
+
+    return stocks
+
+STOCKS = get_nifty200()
 
 def send_telegram(message):
 
@@ -45,12 +51,12 @@ def send_telegram(message):
     try:
         requests.post(url, data=payload)
     except:
-        print("Telegram error")
+        print("Telegram Error")
 
 def calculate_vwap(df):
 
-    tp = (df['High'] + df['Low'] + df['Close']) / 3
-    vwap = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
 
     return vwap.iloc[-1]
 
@@ -89,6 +95,7 @@ def scan():
                 c3 = df.iloc[-1]
 
                 vol_avg = df["Volume"].mean()
+
                 rel_vol = c3["Volume"] / vol_avg
 
                 vwap = calculate_vwap(df)
@@ -102,6 +109,7 @@ def scan():
 
                 green1 = close1 > open1
                 green2 = close2 > open2
+
                 red1 = close1 < open1
                 red2 = close2 < open2
 
@@ -117,9 +125,13 @@ def scan():
 
                             entry = high3
                             stop = low3
+
                             risk = entry - stop
 
                             if risk <= 0:
+                                continue
+
+                            if stock in sent_alerts:
                                 continue
 
                             target = entry + (risk * 2)
@@ -147,6 +159,8 @@ Probability: {probability}%
 
                             send_telegram(message)
 
+                            sent_alerts.add(stock)
+
                 # SHORT SETUP
                 if red1 and red2 and green3:
 
@@ -156,9 +170,13 @@ Probability: {probability}%
 
                             entry = low3
                             stop = high3
+
                             risk = stop - entry
 
                             if risk <= 0:
+                                continue
+
+                            if stock in sent_alerts:
                                 continue
 
                             target = entry - (risk * 2)
@@ -186,6 +204,8 @@ Probability: {probability}%
 
                             send_telegram(message)
 
+                            sent_alerts.add(stock)
+
             except Exception as e:
 
                 print("Error:", stock, e)
@@ -197,14 +217,16 @@ Probability: {probability}%
 @app.route("/")
 def home():
 
-    return "Intraday Scanner Running"
+    return "Scanner Running"
 
 def start():
 
     scan()
 
 thread = threading.Thread(target=start)
+
 thread.start()
 
 if __name__ == "__main__":
+
     app.run()
