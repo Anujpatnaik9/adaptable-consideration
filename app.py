@@ -16,52 +16,76 @@ RISK_PER_TRADE = 5000
 
 sent_alerts = set()
 
-# Fetch NIFTY200 stocks
+# -------------------------------
+# FETCH NIFTY 200 STOCK LIST
+# -------------------------------
+
 def get_nifty200():
 
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200"
+    try:
+        url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200"
 
-    headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0"}
 
-    session = requests.Session()
+        session = requests.Session()
 
-    session.get("https://www.nseindia.com", headers=headers)
+        session.get("https://www.nseindia.com", headers=headers)
 
-    data = session.get(url, headers=headers).json()
+        data = session.get(url, headers=headers).json()
 
-    stocks = []
+        stocks = []
 
-    for item in data["data"]:
-        stocks.append(item["symbol"] + ".NS")
+        for item in data["data"]:
+            stocks.append(item["symbol"] + ".NS")
 
-    return stocks
+        return stocks
+
+    except Exception as e:
+        print("Error loading Nifty200:", e)
+        return []
 
 
 STOCKS = get_nifty200()
 
 
+# -------------------------------
+# TELEGRAM FUNCTION
+# -------------------------------
+
 def send_telegram(message):
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-
     try:
+
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message
+        }
+
         requests.post(url, data=payload)
+
     except Exception as e:
+
         print("Telegram error:", e)
 
+
+# -------------------------------
+# VWAP CALCULATION
+# -------------------------------
 
 def calculate_vwap(df):
 
     tp = (df['High'] + df['Low'] + df['Close']) / 3
+
     vwap = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
 
-    return vwap.iloc[-1]
+    return float(vwap.iloc[-1])
 
+
+# -------------------------------
+# MAIN SCANNER
+# -------------------------------
 
 def scan():
 
@@ -73,13 +97,15 @@ def scan():
 
         now = datetime.now(ist)
 
-        # Run only during market hours
+        # Market hours check
         if now.hour < 9 or now.hour > 15:
+
             time.sleep(60)
             continue
 
-        # Ignore first 3 candles (wait until 9:30)
+        # Ignore first 3 candles (before 9:30)
         if now.hour == 9 and now.minute < 30:
+
             time.sleep(60)
             continue
 
@@ -97,6 +123,7 @@ def scan():
                 )
 
                 if data.empty or len(data) < 6:
+
                     continue
 
                 df = data.tail(6)
@@ -105,17 +132,23 @@ def scan():
                 c2 = df.iloc[-2]
                 c3 = df.iloc[-1]
 
-                open1, close1 = float(c1["Open"]), float(c1["Close"])
-                open2, close2 = float(c2["Open"]), float(c2["Close"])
-                open3, close3 = float(c3["Open"]), float(c3["Close"])
+                open1 = float(c1["Open"])
+                close1 = float(c1["Close"])
+
+                open2 = float(c2["Open"])
+                close2 = float(c2["Close"])
+
+                open3 = float(c3["Open"])
+                close3 = float(c3["Close"])
 
                 vol1 = float(c1["Volume"])
                 vol2 = float(c2["Volume"])
                 vol3 = float(c3["Volume"])
 
-                vol_avg = df["Volume"].mean()
+                vol_avg = float(df["Volume"].mean())
 
                 if vol_avg == 0:
+
                     continue
 
                 rel_vol = vol3 / vol_avg
@@ -127,13 +160,17 @@ def scan():
 
                 green1 = close1 > open1
                 green2 = close2 > open2
+
                 red1 = close1 < open1
                 red2 = close2 < open2
 
                 green3 = close3 > open3
                 red3 = close3 < open3
 
+                # -------------------------------
                 # LONG SETUP
+                # -------------------------------
+
                 if green1 and green2 and red3:
 
                     if vol3 < vol1 and vol3 < vol2:
@@ -146,13 +183,12 @@ def scan():
                             risk = entry - stop
 
                             if risk <= 0:
+
                                 continue
 
                             target = entry + (risk * 2)
 
                             qty = int(RISK_PER_TRADE / risk)
-
-                            score = rel_vol
 
                             message = f"""
 🚀 LONG TRADE
@@ -169,9 +205,12 @@ Relative Volume: {round(rel_vol,2)}
 VWAP: {round(vwap,2)}
 """
 
-                            trade_list.append((score, stock, message))
+                            trade_list.append((rel_vol, stock, message))
 
+                # -------------------------------
                 # SHORT SETUP
+                # -------------------------------
+
                 if red1 and red2 and green3:
 
                     if vol3 < vol1 and vol3 < vol2:
@@ -184,13 +223,12 @@ VWAP: {round(vwap,2)}
                             risk = stop - entry
 
                             if risk <= 0:
+
                                 continue
 
                             target = entry - (risk * 2)
 
                             qty = int(RISK_PER_TRADE / risk)
-
-                            score = rel_vol
 
                             message = f"""
 🔻 SHORT TRADE
@@ -207,7 +245,7 @@ Relative Volume: {round(rel_vol,2)}
 VWAP: {round(vwap,2)}
 """
 
-                            trade_list.append((score, stock, message))
+                            trade_list.append((rel_vol, stock, message))
 
             except Exception as e:
 
@@ -230,6 +268,10 @@ VWAP: {round(vwap,2)}
         time.sleep(60)
 
 
+# -------------------------------
+# FLASK SERVER
+# -------------------------------
+
 @app.route("/")
 def home():
 
@@ -244,6 +286,7 @@ def start():
 thread = threading.Thread(target=start)
 
 thread.daemon = True
+
 thread.start()
 
 
