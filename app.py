@@ -1,308 +1,422 @@
 from flask import Flask
-import requests
-import threading
-import time
 import os
-from datetime import datetime
-import pytz
+import time
+import threading
+import requests
 import pandas as pd
+from datetime import datetime, timedelta
 from kiteconnect import KiteConnect
 
 app = Flask(__name__)
 
-# ---------------------------------
+# -----------------------------
 # ENV VARIABLES
-# ---------------------------------
+# -----------------------------
 
-API_KEY = os.environ.get("KITE_API_KEY")
-API_SECRET = os.environ.get("KITE_API_SECRET")
-REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
+API_KEY = os.getenv("KITE_API_KEY")
+ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN")
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-RISK_PER_TRADE = 5000
+CAPITAL = 500000
+RISK_PER_TRADE = 0.01
+MAX_TRADES = 2
+MAX_DAILY_LOSS = 10000
+SCAN_INTERVAL = 300
 
-sent_alerts = set()
-
-# ---------------------------------
-# ZERODHA LOGIN
-# ---------------------------------
+TRADES_COUNT = 0
+ACTIVE_SYMBOLS = []
+CRASH_MODE = False
 
 kite = KiteConnect(api_key=API_KEY)
+kite.set_access_token(ACCESS_TOKEN)
 
-data = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
-
-kite.set_access_token(data["access_token"])
-
-# ---------------------------------
+# -----------------------------
 # TELEGRAM
-# ---------------------------------
+# -----------------------------
 
 def send_telegram(msg):
 
     try:
-
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg
-        }
-
-        requests.post(url, data=payload)
-
-    except Exception as e:
-
-        print("Telegram error:", e)
+        url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
+    except:
+        pass
 
 
-# ---------------------------------
-# GET NIFTY200
-# ---------------------------------
+def get_updates(offset=None):
+
+    url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    params={"timeout":1,"offset":offset}
+
+    return requests.get(url,params=params).json()
+
+
+# -----------------------------
+# NIFTY 200
+# -----------------------------
 
 def get_nifty200():
 
+    url="https://archives.nseindia.com/content/indices/ind_nifty200list.csv"
+
+    df=pd.read_csv(url)
+
+    return df["Symbol"].tolist()
+
+
+# -----------------------------
+# GET CANDLES
+# -----------------------------
+
+def get_candles(symbol):
+
     try:
 
-        url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20200"
+        instrument=f"NSE:{symbol}"
 
-        headers = {"User-Agent": "Mozilla/5.0"}
+        token=kite.ltp(instrument)[instrument]["instrument_token"]
 
-        session = requests.Session()
+        data=kite.historical_data(
+            token,
+            datetime.now()-timedelta(days=4),
+            datetime.now(),
+            "5minute"
+        )
 
-        session.get("https://www.nseindia.com", headers=headers)
+        df=pd.DataFrame(data)
 
-        data = session.get(url, headers=headers).json()
+        df['date']=pd.to_datetime(df['date']).dt.tz_localize(None)
 
-        stocks = []
+        return df
 
-        for item in data["data"]:
+    except:
 
-            stocks.append("NSE:" + item["symbol"])
-
-        return stocks
-
-    except Exception as e:
-
-        print("Error loading Nifty200:", e)
-
-        return []
+        return None
 
 
-STOCKS = get_nifty200()
+# -----------------------------
+# MARKET CRASH CHECK
+# -----------------------------
+
+def check_market_crash():
+
+    global CRASH_MODE
+
+    try:
+
+        inst="NSE:NIFTY 50"
+
+        token=kite.ltp(inst)[inst]["instrument_token"]
+
+        data=kite.historical_data(
+            token,
+            datetime.now()-timedelta(minutes=15),
+            datetime.now(),
+            "5minute"
+        )
+
+        df=pd.DataFrame(data)
+
+        if len(df)>=2:
+
+            move=((df.iloc[-1].close-df.iloc[0].open)/df.iloc[0].open)*100
+
+            if abs(move)>1.5:
+
+                CRASH_MODE=True
+
+                send_telegram("⚠ MARKET VOLATILITY DETECTED. Trades paused.")
+
+    except:
+        pass
 
 
-# ---------------------------------
-# VWAP
-# ---------------------------------
+# -----------------------------
+# SCAN STOCK
+# -----------------------------
 
-def calculate_vwap(df):
+def scan_stock(symbol):
 
-    tp = (df['high'] + df['low'] + df['close']) / 3
+    df=get_candles(symbol)
 
-    vwap = (tp * df['volume']).cumsum() / df['volume'].cumsum()
+    if df is None or len(df)<50:
+        return None
 
-    return float(vwap.iloc[-1])
+    today=datetime.now().date()
+
+    df_today=df[df['date'].dt.date==today]
+
+    df_prev=df[df['date'].dt.date<today]
+
+    if df_today.empty or df_prev.empty:
+        return None
+
+    orb=df_today.between_time("09:15","09:30")
+
+    if orb.empty:
+        return None
+
+    orb_high=orb.high.max()
+    orb_low=orb.low.min()
+
+    pdh=df_prev.high.max()
+    pdl=df_prev.low.min()
+
+    last=df_today.iloc[-1]
+    prev=df_today.iloc[-2]
+
+    vol_avg=df_today.volume.tail(10).mean()
+
+    # LONG
+
+    if last.close>orb_high and last.close>pdh and last.volume>vol_avg*1.5:
+
+        risk=last.close-prev.low
+
+        if risk<=0:
+            return None
+
+        qty=int((CAPITAL*RISK_PER_TRADE)/risk)
+
+        return ("LONG",last.close,prev.low,last.close+risk*2,max(qty,1))
+
+    # SHORT
+
+    if last.close<orb_low and last.close<pdl and last.volume>vol_avg*1.5:
+
+        risk=prev.high-last.close
+
+        if risk<=0:
+            return None
+
+        qty=int((CAPITAL*RISK_PER_TRADE)/risk)
+
+        return ("SHORT",last.close,prev.high,last.close-risk*2,max(qty,1))
+
+    return None
 
 
-# ---------------------------------
-# SCANNER
-# ---------------------------------
+# -----------------------------
+# PLACE TRADE
+# -----------------------------
 
-def scan():
+def place_trade(symbol,side,entry,sl,target,qty):
 
-    send_telegram("✅ Zerodha Intraday Scanner Started")
+    global TRADES_COUNT
 
-    ist = pytz.timezone("Asia/Kolkata")
+    ttype=kite.TRANSACTION_TYPE_BUY if side=="LONG" else kite.TRANSACTION_TYPE_SELL
+
+    kite.place_order(
+        variety=kite.VARIETY_REGULAR,
+        exchange=kite.EXCHANGE_NSE,
+        tradingsymbol=symbol,
+        transaction_type=ttype,
+        quantity=qty,
+        order_type=kite.ORDER_TYPE_MARKET,
+        product=kite.PRODUCT_MIS
+    )
+
+    send_telegram(f"TRADE EXECUTED {symbol} {side} Qty {qty}")
+
+    ACTIVE_SYMBOLS.append(symbol)
+
+    TRADES_COUNT+=1
+
+    threading.Thread(
+        target=manage_trade,
+        args=(symbol,side,entry,sl,target,qty)
+    ).start()
+
+
+# -----------------------------
+# TRADE MANAGEMENT
+# -----------------------------
+
+def manage_trade(symbol,side,entry,sl,target,qty):
+
+    half=False
 
     while True:
 
-        now = datetime.now(ist)
+        try:
 
-        if now.hour < 9 or now.hour > 15:
+            ltp=kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
 
-            time.sleep(60)
+            if side=="LONG":
 
+                if ltp>=target and not half:
+
+                    kite.place_order(
+                        variety=kite.VARIETY_REGULAR,
+                        exchange=kite.EXCHANGE_NSE,
+                        tradingsymbol=symbol,
+                        transaction_type=kite.TRANSACTION_TYPE_SELL,
+                        quantity=qty//2,
+                        order_type=kite.ORDER_TYPE_MARKET,
+                        product=kite.PRODUCT_MIS
+                    )
+
+                    half=True
+
+                    sl=entry
+
+                    send_telegram(f"{symbol} TARGET HIT. 50% booked.")
+
+                if ltp<=sl:
+
+                    kite.place_order(
+                        variety=kite.VARIETY_REGULAR,
+                        exchange=kite.EXCHANGE_NSE,
+                        tradingsymbol=symbol,
+                        transaction_type=kite.TRANSACTION_TYPE_SELL,
+                        quantity=qty,
+                        order_type=kite.ORDER_TYPE_MARKET,
+                        product=kite.PRODUCT_MIS
+                    )
+
+                    send_telegram(f"{symbol} SL HIT")
+
+                    break
+
+            if side=="SHORT":
+
+                if ltp<=target and not half:
+
+                    kite.place_order(
+                        variety=kite.VARIETY_REGULAR,
+                        exchange=kite.EXCHANGE_NSE,
+                        tradingsymbol=symbol,
+                        transaction_type=kite.TRANSACTION_TYPE_BUY,
+                        quantity=qty//2,
+                        order_type=kite.ORDER_TYPE_MARKET,
+                        product=kite.PRODUCT_MIS
+                    )
+
+                    half=True
+
+                    sl=entry
+
+                    send_telegram(f"{symbol} TARGET HIT. 50% booked.")
+
+                if ltp>=sl:
+
+                    kite.place_order(
+                        variety=kite.VARIETY_REGULAR,
+                        exchange=kite.EXCHANGE_NSE,
+                        tradingsymbol=symbol,
+                        transaction_type=kite.TRANSACTION_TYPE_BUY,
+                        quantity=qty,
+                        order_type=kite.ORDER_TYPE_MARKET,
+                        product=kite.PRODUCT_MIS
+                    )
+
+                    send_telegram(f"{symbol} SL HIT")
+
+                    break
+
+            time.sleep(10)
+
+        except:
+            break
+
+
+# -----------------------------
+# MAIN BOT LOOP
+# -----------------------------
+
+def bot_loop():
+
+    global TRADES_COUNT
+
+    symbols=get_nifty200()
+
+    send_telegram("🤖 Trading Bot Started")
+
+    update_id=None
+
+    pending={}
+
+    while True:
+
+        now=datetime.now()
+
+        check_market_crash()
+
+        if now.strftime("%H:%M")<"09:30":
+
+            time.sleep(30)
             continue
 
-        if now.hour == 9 and now.minute < 30:
+        if now.strftime("%H:%M")>"11:30" or TRADES_COUNT>=MAX_TRADES:
 
             time.sleep(60)
-
             continue
 
-        trades = []
+        if CRASH_MODE:
 
-        for stock in STOCKS:
+            time.sleep(60)
+            continue
 
-            try:
+        for symbol in symbols:
 
-                instrument = kite.ltp(stock)
+            if symbol in ACTIVE_SYMBOLS:
+                continue
 
-                instrument_token = list(instrument.values())[0]["instrument_token"]
+            signal=scan_stock(symbol)
 
-                data = kite.historical_data(
+            if signal:
 
-                    instrument_token,
+                side,entry,sl,target,qty=signal
 
-                    from_date=datetime.now() - pd.Timedelta("1D"),
-
-                    to_date=datetime.now(),
-
-                    interval="5minute"
-
+                send_telegram(
+                    f"SETUP {symbol}\n{side}\nEntry {entry}\nSL {sl}\nTarget {target}\nReply YES {symbol}"
                 )
 
-                df = pd.DataFrame(data)
+                pending[symbol]=signal
 
-                if len(df) < 6:
+        updates=get_updates(update_id)
 
-                    continue
+        for item in updates.get("result",[]):
 
-                df = df.tail(6)
+            update_id=item["update_id"]+1
 
-                c1 = df.iloc[-3]
-                c2 = df.iloc[-2]
-                c3 = df.iloc[-1]
+            text=item.get("message",{}).get("text","").upper()
 
-                open1, close1 = c1["open"], c1["close"]
-                open2, close2 = c2["open"], c2["close"]
-                open3, close3 = c3["open"], c3["close"]
+            if text.startswith("YES"):
 
-                vol1, vol2, vol3 = c1["volume"], c2["volume"], c3["volume"]
+                sym=text.split()[-1]
 
-                vwap = calculate_vwap(df)
+                if sym in pending and TRADES_COUNT<MAX_TRADES:
 
-                high3 = c3["high"]
-                low3 = c3["low"]
+                    side,entry,sl,target,qty=pending[sym]
 
-                green1 = close1 > open1
-                green2 = close2 > open2
-                red3 = close3 < open3
+                    place_trade(sym,side,entry,sl,target,qty)
 
-                red1 = close1 < open1
-                red2 = close2 < open2
-                green3 = close3 > open3
+                    del pending[sym]
 
-                vol_avg = df["volume"].mean()
-
-                if vol_avg == 0:
-
-                    continue
-
-                rel_vol = vol3 / vol_avg
-
-                # LONG SETUP
-                if green1 and green2 and red3:
-
-                    if vol3 < vol1 and vol3 < vol2:
-
-                        if close3 > vwap and rel_vol >= 1.5:
-
-                            entry = high3
-                            stop = low3
-
-                            risk = entry - stop
-
-                            if risk <= 0:
-
-                                continue
-
-                            target = entry + (risk * 2)
-
-                            qty = int(RISK_PER_TRADE / risk)
-
-                            msg = f"""
-🚀 LONG TRADE
-
-Stock: {stock}
-
-Entry: {round(entry,2)}
-Stop Loss: {round(stop,2)}
-Target: {round(target,2)}
-
-Qty: {qty}
-"""
-
-                            trades.append((rel_vol, stock, msg))
-
-                # SHORT SETUP
-                if red1 and red2 and green3:
-
-                    if vol3 < vol1 and vol3 < vol2:
-
-                        if close3 < vwap and rel_vol >= 1.5:
-
-                            entry = low3
-                            stop = high3
-
-                            risk = stop - entry
-
-                            if risk <= 0:
-
-                                continue
-
-                            target = entry - (risk * 2)
-
-                            qty = int(RISK_PER_TRADE / risk)
-
-                            msg = f"""
-🔻 SHORT TRADE
-
-Stock: {stock}
-
-Entry: {round(entry,2)}
-Stop Loss: {round(stop,2)}
-Target: {round(target,2)}
-
-Qty: {qty}
-"""
-
-                            trades.append((rel_vol, stock, msg))
-
-            except Exception as e:
-
-                print("Scan error:", stock, e)
-
-        trades.sort(reverse=True)
-
-        top = trades[:10]
-
-        for t in top:
-
-            score, stock, msg = t
-
-            if stock not in sent_alerts:
-
-                send_telegram(msg)
-
-                sent_alerts.add(stock)
-
-        time.sleep(60)
+        time.sleep(SCAN_INTERVAL)
 
 
-# ---------------------------------
-# FLASK
-# ---------------------------------
+# -----------------------------
+# FLASK KEEP ALIVE
+# -----------------------------
 
 @app.route("/")
+
 def home():
 
-    return "Scanner Running"
+    return "Trading Bot Running"
 
 
-def start():
+thread=threading.Thread(target=bot_loop)
 
-    scan()
-
-
-thread = threading.Thread(target=start)
-
-thread.daemon = True
+thread.daemon=True
 
 thread.start()
 
-if __name__ == "__main__":
 
-    app.run(host="0.0.0.0", port=8080)
+if __name__=="__main__":
+
+    app.run(host="0.0.0.0",port=8080)
