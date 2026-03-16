@@ -19,14 +19,16 @@ RISK_PER_TRADE=0.01
 MAX_TRADES=2
 SCAN_INTERVAL=60
 
-TRADES_COUNT=0
-ACTIVE_SYMBOLS=[]
-TRADED_TODAY=set()
-SIGNALLED_SYMBOLS=set()
-ORDER_PLACED=set()
-
 kite=KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
+
+TRADES_COUNT=0
+TRADED_TODAY=set()
+ORDER_PLACED=set()
+
+instrument_tokens={}
+weakest=[]
+strongest=[]
 
 # TELEGRAM
 
@@ -38,21 +40,21 @@ def send_telegram(msg):
         pass
 
 
-def get_updates(offset=None):
-    url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params={"timeout":1,"offset":offset}
-    return requests.get(url,params=params).json()
-
-
-# NIFTY200 LIST
+# GET NIFTY200
 
 def get_nifty200():
-
     url="https://archives.nseindia.com/content/indices/ind_nifty200list.csv"
-
     df=pd.read_csv(url)
-
     return list(df["Symbol"])
+
+
+# CACHE INSTRUMENT TOKENS
+
+def load_tokens(symbols):
+    instruments=kite.instruments("NSE")
+    for i in instruments:
+        if i["tradingsymbol"] in symbols:
+            instrument_tokens[i["tradingsymbol"]]=i["instrument_token"]
 
 
 # MARKET DIRECTION
@@ -60,10 +62,8 @@ def get_nifty200():
 def get_market_direction():
 
     try:
-
         url="https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
         headers={"User-Agent":"Mozilla/5.0"}
-
         data=requests.get(url,headers=headers).json()
 
         adv=data["advance"]["advances"]
@@ -71,7 +71,6 @@ def get_market_direction():
 
         if dec>adv:
             return "SHORT"
-
         if adv>dec:
             return "LONG"
 
@@ -87,9 +86,7 @@ def get_candles(symbol):
 
     try:
 
-        inst=f"NSE:{symbol}"
-
-        token=kite.ltp(inst)[inst]["instrument_token"]
+        token=instrument_tokens[symbol]
 
         data=kite.historical_data(
         token,
@@ -99,19 +96,19 @@ def get_candles(symbol):
         )
 
         df=pd.DataFrame(data)
-
         df['date']=pd.to_datetime(df['date']).dt.tz_localize(None)
 
         return df
 
     except:
-
         return None
 
 
-# RELATIVE STRENGTH RANKING
+# RELATIVE STRENGTH (RUNS EVERY 5 MIN)
 
-def rank_relative_strength(symbols):
+def update_strength(symbols):
+
+    global weakest,strongest
 
     scores=[]
 
@@ -131,7 +128,7 @@ def rank_relative_strength(symbols):
     weakest=[x[0] for x in ranked[:20]]
     strongest=[x[0] for x in ranked[-20:]]
 
-    return weakest,strongest
+    send_telegram("Relative strength updated")
 
 
 # SCANNER
@@ -165,39 +162,37 @@ def scan_stock(symbol,direction):
 
     if direction=="SHORT":
 
-        if last.close<pdl and last.close>last.open:
+        if last.close<pdl and last.close>last.open and last.volume==lowest_vol:
 
-            if last.volume==lowest_vol:
+            entry=last.low
+            sl=last.high
+            risk=sl-entry
 
-                entry=last.low
-                sl=last.high
-                risk=sl-entry
+            if risk<=0:
+                return None
 
-                if risk<=0:
-                    return None
+            qty=int((CAPITAL*RISK_PER_TRADE)/risk)
 
-                qty=int((CAPITAL*RISK_PER_TRADE)/risk)
-                target=entry-(risk*2)
+            target=entry-(risk*2)
 
-                return("SHORT",entry,sl,target,max(qty,1))
+            return("SHORT",entry,sl,target,max(qty,1))
 
     if direction=="LONG":
 
-        if last.close>pdh and last.close<last.open:
+        if last.close>pdh and last.close<last.open and last.volume==lowest_vol:
 
-            if last.volume==lowest_vol:
+            entry=last.high
+            sl=last.low
+            risk=entry-sl
 
-                entry=last.high
-                sl=last.low
-                risk=entry-sl
+            if risk<=0:
+                return None
 
-                if risk<=0:
-                    return None
+            qty=int((CAPITAL*RISK_PER_TRADE)/risk)
 
-                qty=int((CAPITAL*RISK_PER_TRADE)/risk)
-                target=entry+(risk*2)
+            target=entry+(risk*2)
 
-                return("LONG",entry,sl,target,max(qty,1))
+            return("LONG",entry,sl,target,max(qty,1))
 
     return None
 
@@ -227,9 +222,7 @@ def place_trade(symbol,side,entry,sl,target,qty):
 
     send_telegram(f"TRADE EXECUTED {symbol}")
 
-    ACTIVE_SYMBOLS.append(symbol)
     TRADED_TODAY.add(symbol)
-
     TRADES_COUNT+=1
 
     threading.Thread(
@@ -262,7 +255,7 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                 product=kite.PRODUCT_MIS
                 )
 
-                send_telegram("Position closed at 3:15")
+                send_telegram("Position closed 3:15")
 
                 break
 
@@ -285,7 +278,7 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                     sl=entry
                     half=True
 
-                    send_telegram("Target hit. 50% booked")
+                    send_telegram("Target hit 50% booked")
 
                 if ltp<=sl:
 
@@ -320,7 +313,7 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                     sl=entry
                     half=True
 
-                    send_telegram("Target hit. 50% booked")
+                    send_telegram("Target hit 50% booked")
 
                 if ltp>=sl:
 
@@ -348,72 +341,52 @@ def manage_trade(symbol,side,entry,sl,target,qty):
 
 def bot_loop():
 
-    global TRADES_COUNT
-
     symbols=get_nifty200()
 
-    weakest,strongest=rank_relative_strength(symbols)
+    load_tokens(symbols)
 
-    send_telegram("🤖 Low Volume Strategy Bot Started – Scanning NIFTY200")
+    send_telegram("🤖 Low Volume Strategy Bot Started – NIFTY200")
 
-    update_id=None
-    pending={}
+    last_strength_update=0
 
     while True:
 
-        direction=get_market_direction()
+        try:
 
-        if direction=="SHORT":
-            scan_list=weakest
-        else:
-            scan_list=strongest
+            now=time.time()
 
-        for symbol in scan_list:
+            if now-last_strength_update>300:
+                update_strength(symbols)
+                last_strength_update=now
 
-            if symbol in TRADED_TODAY:
-                continue
+            direction=get_market_direction()
 
-            if symbol in SIGNALLED_SYMBOLS:
-                continue
+            scan_list=weakest if direction=="SHORT" else strongest
 
-            if TRADES_COUNT>=MAX_TRADES:
-                continue
+            for symbol in scan_list:
 
-            signal=scan_stock(symbol,direction)
+                if symbol in TRADED_TODAY:
+                    continue
 
-            if signal:
+                if TRADES_COUNT>=MAX_TRADES:
+                    continue
 
-                side,entry,sl,target,qty=signal
+                signal=scan_stock(symbol,direction)
 
-                send_telegram(
-                f"SETUP {symbol}\n{side}\nEntry {entry}\nSL {sl}\nTarget {target}\nReply YES {symbol}"
-                )
+                if signal:
 
-                SIGNALLED_SYMBOLS.add(symbol)
+                    side,entry,sl,target,qty=signal
 
-                pending[symbol]=signal
+                    send_telegram(
+                    f"SETUP {symbol}\n{side}\nEntry {entry}\nSL {sl}\nTarget {target}"
+                    )
 
-        updates=get_updates(update_id)
+                    place_trade(symbol,side,entry,sl,target,qty)
 
-        for item in updates.get("result",[]):
+            time.sleep(SCAN_INTERVAL)
 
-            update_id=item["update_id"]+1
-
-            text=item.get("message",{}).get("text","").upper()
-
-            if text.startswith("YES"):
-
-                sym=text.split()[-1]
-
-                if sym in pending:
-
-                    side,entry,sl,target,qty=pending[sym]
-
-                    place_trade(sym,side,entry,sl,target,qty)
-
-                    del pending[sym]
-
-        time.sleep(SCAN_INTERVAL)
+        except:
+            time.sleep(10)
 
 
 @app.route("/")
@@ -421,14 +394,11 @@ def home():
     return "Trading Bot Running"
 
 
-# DEPLOYMENT CONFIRMATION MESSAGE
 send_telegram("🚀 Trading Bot Deployed Successfully")
-
 
 thread=threading.Thread(target=bot_loop)
 thread.daemon=True
 thread.start()
-
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=8080)
