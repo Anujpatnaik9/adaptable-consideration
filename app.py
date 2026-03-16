@@ -37,10 +37,12 @@ def send_telegram(msg):
     except:
         pass
 
+
 def get_updates(offset=None):
     url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     params={"timeout":1,"offset":offset}
     return requests.get(url,params=params).json()
+
 
 # NIFTY200 LIST
 
@@ -51,6 +53,7 @@ def get_nifty200():
     df=pd.read_csv(url)
 
     return list(df["Symbol"])
+
 
 # MARKET DIRECTION
 
@@ -77,13 +80,15 @@ def get_market_direction():
 
     return None
 
-# CANDLES
+
+# GET CANDLES
 
 def get_candles(symbol):
 
     try:
 
         inst=f"NSE:{symbol}"
+
         token=kite.ltp(inst)[inst]["instrument_token"]
 
         data=kite.historical_data(
@@ -94,14 +99,17 @@ def get_candles(symbol):
         )
 
         df=pd.DataFrame(data)
+
         df['date']=pd.to_datetime(df['date']).dt.tz_localize(None)
 
         return df
 
     except:
+
         return None
 
-# RELATIVE STRENGTH
+
+# RELATIVE STRENGTH RANKING
 
 def rank_relative_strength(symbols):
 
@@ -124,6 +132,7 @@ def rank_relative_strength(symbols):
     strongest=[x[0] for x in ranked[-20:]]
 
     return weakest,strongest
+
 
 # SCANNER
 
@@ -192,7 +201,8 @@ def scan_stock(symbol,direction):
 
     return None
 
-# TRADE
+
+# PLACE TRADE
 
 def place_trade(symbol,side,entry,sl,target,qty):
 
@@ -227,6 +237,7 @@ def place_trade(symbol,side,entry,sl,target,qty):
     args=(symbol,side,entry,sl,target,qty)
     ).start()
 
+
 # TRADE MANAGEMENT
 
 def manage_trade(symbol,side,entry,sl,target,qty):
@@ -251,7 +262,7 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                 product=kite.PRODUCT_MIS
                 )
 
-                send_telegram("Force exit 3:15")
+                send_telegram("Position closed at 3:15")
 
                 break
 
@@ -274,6 +285,8 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                     sl=entry
                     half=True
 
+                    send_telegram("Target hit. 50% booked")
+
                 if ltp<=sl:
 
                     kite.place_order(
@@ -285,6 +298,8 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                     order_type=kite.ORDER_TYPE_MARKET,
                     product=kite.PRODUCT_MIS
                     )
+
+                    send_telegram("Stop Loss Hit")
 
                     break
 
@@ -305,6 +320,8 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                     sl=entry
                     half=True
 
+                    send_telegram("Target hit. 50% booked")
+
                 if ltp>=sl:
 
                     kite.place_order(
@@ -317,12 +334,15 @@ def manage_trade(symbol,side,entry,sl,target,qty):
                     product=kite.PRODUCT_MIS
                     )
 
+                    send_telegram("Stop Loss Hit")
+
                     break
 
             time.sleep(5)
 
         except:
             break
+
 
 # BOT LOOP
 
@@ -334,7 +354,7 @@ def bot_loop():
 
     weakest,strongest=rank_relative_strength(symbols)
 
-    send_telegram("BOT STARTED")
+    send_telegram("🤖 Low Volume Strategy Bot Started – Scanning NIFTY200")
 
     update_id=None
     pending={}
@@ -370,6 +390,7 @@ def bot_loop():
                 )
 
                 SIGNALLED_SYMBOLS.add(symbol)
+
                 pending[symbol]=signal
 
         updates=get_updates(update_id)
@@ -394,14 +415,20 @@ def bot_loop():
 
         time.sleep(SCAN_INTERVAL)
 
-@app.route("/")
 
+@app.route("/")
 def home():
     return "Trading Bot Running"
+
+
+# DEPLOYMENT CONFIRMATION MESSAGE
+send_telegram("🚀 Trading Bot Deployed Successfully")
+
 
 thread=threading.Thread(target=bot_loop)
 thread.daemon=True
 thread.start()
+
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=8080)
