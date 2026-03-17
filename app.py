@@ -106,7 +106,7 @@ def scan_stock(symbol):
 
     # Time filter
     now = datetime.now().time()
-    if not (datetime.strptime("09:45","%H:%M").time() <= now <= datetime.strptime("13:30","%H:%M").time()):
+    if not (datetime.strptime("09:45","%H:%M").time() <= now <= datetime.strptime("15:00","%H:%M").time()):
         return None
 
     # 🔥 STEP 1: Detect Trend
