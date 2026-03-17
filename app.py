@@ -24,9 +24,7 @@ kite.set_access_token(ACCESS_TOKEN)
 
 TRADES_COUNT = 0
 TRADED_TODAY = set()
-ACTIVE_TRADES = {}
 instrument_tokens = {}
-
 PENDING_TRADES = {}
 LAST_UPDATE_ID = None
 
@@ -37,6 +35,11 @@ def send_telegram(msg):
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
+
+# ================= MARKET TIME CHECK =================
+def is_market_open():
+    now = datetime.now().time()
+    return datetime.strptime("09:15","%H:%M").time() <= now <= datetime.strptime("15:15","%H:%M").time()
 
 # ================= MARKET BIAS =================
 def get_market_bias():
@@ -117,11 +120,13 @@ def check_signal(symbol, direction):
 
 # ================= PLACE TRADE =================
 def place_trade(symbol, side, entry, sl, target, qty):
-    global TRADES_COUNT
+
+    if not is_market_open():
+        send_telegram("⛔ Market closed. Trade not executed.")
+        return False
 
     try:
-        q_half = qty // 2
-        q_remain = qty - q_half
+        ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
 
         kite.place_order(
             variety=kite.VARIETY_REGULAR,
@@ -133,7 +138,7 @@ def place_trade(symbol, side, entry, sl, target, qty):
             product=kite.PRODUCT_MIS
         )
 
-        sl_id = kite.place_order(
+        kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange=kite.EXCHANGE_NSE,
             tradingsymbol=symbol,
@@ -144,33 +149,16 @@ def place_trade(symbol, side, entry, sl, target, qty):
             product=kite.PRODUCT_MIS
         )
 
-        tgt_id = kite.place_order(
-            variety=kite.VARIETY_REGULAR,
-            exchange=kite.EXCHANGE_NSE,
-            tradingsymbol=symbol,
-            transaction_type=kite.TRANSACTION_TYPE_SELL if side=="LONG" else kite.TRANSACTION_TYPE_BUY,
-            quantity=q_half,
-            order_type=kite.ORDER_TYPE_LIMIT,
-            price=round(target,1),
-            product=kite.PRODUCT_MIS
+        send_telegram(
+            f"🚀 TRADE EXECUTED: {symbol}\n"
+            f"Side: {side}\nQty: {qty}\nLTP: {ltp}\nSL: {sl}\nTarget: {target}"
         )
 
-        ACTIVE_TRADES[symbol] = {
-            "side": side,
-            "entry": entry,
-            "sl_id": sl_id,
-            "tgt_id": tgt_id,
-            "remaining_qty": q_remain,
-            "half_done": False
-        }
-
-        TRADES_COUNT += 1
-        TRADED_TODAY.add(symbol)
-
-        send_telegram(f"🚀 TRADE EXECUTED: {symbol}")
+        return True
 
     except Exception as e:
         send_telegram(f"❌ Order Failed: {e}")
+        return False
 
 # ================= TELEGRAM LISTENER =================
 def check_telegram_commands():
@@ -190,7 +178,7 @@ def check_telegram_commands():
                 if "message" in update:
                     text = update["message"].get("text", "").upper()
 
-                    # TEST COMMAND
+                    # TEST MODE
                     if text == "TEST":
                         PENDING_TRADES["RELIANCE"] = {
                             "side": "LONG",
@@ -201,7 +189,7 @@ def check_telegram_commands():
                         }
                         send_telegram("🧪 TEST SIGNAL: RELIANCE\nReply YES RELIANCE")
 
-                    # YES COMMAND
+                    # CONFIRMATION
                     if text.startswith("YES"):
                         parts = text.split()
 
@@ -211,7 +199,7 @@ def check_telegram_commands():
                             if symbol in PENDING_TRADES:
                                 trade = PENDING_TRADES.pop(symbol)
 
-                                place_trade(
+                                success = place_trade(
                                     symbol,
                                     trade["side"],
                                     trade["entry"],
@@ -220,9 +208,10 @@ def check_telegram_commands():
                                     trade["qty"]
                                 )
 
-                                send_telegram(f"✅ CONFIRMED: {symbol}")
+                                if success:
+                                    send_telegram(f"✅ CONFIRMED & EXECUTED: {symbol}")
                             else:
-                                send_telegram("❌ No pending trade for this symbol")
+                                send_telegram("❌ No pending trade")
 
         except Exception as e:
             print("Telegram Error:", e)
@@ -235,7 +224,7 @@ def bot_loop():
     symbols = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","LT"]
     load_tokens(symbols)
 
-    send_telegram("🚀 V4.2 BOT STARTED (TEST + CONFIRMATION MODE)")
+    send_telegram("🚀 V4.3 BOT STARTED (FINAL CLEAN VERSION)")
 
     while True:
         try:
@@ -271,8 +260,8 @@ def bot_loop():
 
                     send_telegram(
                         f"📊 SIGNAL: {symbol}\n"
-                        f"{side}\nEntry: {entry}\nSL: {sl}\nTarget: {target}\n\n"
-                        f"Reply: YES {symbol}"
+                        f"{side}\nEntry: {entry}\nSL: {sl}\nTarget: {target}\nQty: {qty}\n\n"
+                        f"Reply YES {symbol}"
                     )
 
             time.sleep(30)
@@ -282,7 +271,7 @@ def bot_loop():
 
 @app.route("/")
 def home():
-    return "V4.2 Running"
+    return "V4.3 Running"
 
 threading.Thread(target=bot_loop, daemon=True).start()
 threading.Thread(target=check_telegram_commands, daemon=True).start()
