@@ -1,30 +1,36 @@
 from flask import Flask
-import os
-import time
-import threading
-import requests
+import os, time, threading, requests
 import pandas as pd
 from datetime import datetime, timedelta
 from kiteconnect import KiteConnect
 
 app = Flask(__name__)
 
-# ================= SETTINGS =================
+# ================= CONFIG =================
 API_KEY = os.getenv("KITE_API_KEY")
 ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CAPITAL = 500000
-RISK_PER_TRADE = 0.01
+RISK_PER_TRADE = 5000
 MAX_TRADES = 2
+
+ENTRY_START = "09:30"
+ENTRY_END = "14:30"
+EXIT_TIME = "15:15"
 
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
 
 TRADES_COUNT = 0
 TRADED_TODAY = set()
+ACTIVE_TRADES = {}
 instrument_tokens = {}
+
+# NEW (confirmation system)
+PENDING_TRADES = {}
+LAST_UPDATE_ID = None
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
@@ -33,19 +39,6 @@ def send_telegram(msg):
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
-
-# ================= NIFTY200 =================
-def get_nifty200():
-    url = "https://archives.nseindia.com/content/indices/ind_nifty200list.csv"
-    df = pd.read_csv(url)
-    return list(df["Symbol"])
-
-# ================= LOAD TOKENS =================
-def load_tokens(symbols):
-    instruments = kite.instruments("NSE")
-    for i in instruments:
-        if i["tradingsymbol"] in symbols:
-            instrument_tokens[i["tradingsymbol"]] = i["instrument_token"]
 
 # ================= MARKET BIAS =================
 def get_market_bias():
@@ -57,158 +50,243 @@ def get_market_bias():
         adv = data["advance"]["advances"]
         dec = data["advance"]["declines"]
 
-        if adv - dec >= 300:
+        if adv - dec > 300:
             return "LONG"
-        elif dec - adv >= 300:
+        elif dec - adv > 300:
             return "SHORT"
     except:
         pass
-
     return None
 
-# ================= CANDLES =================
+# ================= LOAD TOKENS =================
+def load_tokens(symbols):
+    instruments = kite.instruments("NSE")
+    for i in instruments:
+        if i["tradingsymbol"] in symbols:
+            instrument_tokens[i["tradingsymbol"]] = i["instrument_token"]
+
+# ================= GET DATA =================
 def get_candles(symbol):
     try:
         token = instrument_tokens[symbol]
-
         data = kite.historical_data(
             token,
-            datetime.now() - timedelta(days=2),
+            datetime.now() - timedelta(days=1),
             datetime.now(),
             "5minute"
         )
-
         df = pd.DataFrame(data)
         df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
         return df
-
     except:
         return None
 
-# ================= LOW VOLUME LOGIC =================
+# ================= STRATEGY =================
 def check_signal(symbol, direction):
-
     df = get_candles(symbol)
     if df is None or len(df) < 10:
         return None
 
     today = datetime.now().date()
-    df_today = df[df['date'].dt.date == today]
+    df = df[df['date'].dt.date == today]
 
-    if len(df_today) < 7:
+    if len(df) < 7:
         return None
 
-    # Ignore first 3 candles for trading
-    df_trade = df_today[df_today['date'].dt.time >= datetime.strptime("09:30","%H:%M").time()]
-
-    if df_trade.empty:
+    now = datetime.now().time()
+    if not (datetime.strptime(ENTRY_START,"%H:%M").time() <= now <= datetime.strptime(ENTRY_END,"%H:%M").time()):
         return None
 
-    current = df_today.iloc[-1]
+    candle = df.loc[df['volume'].idxmin()]
 
-    # Volume condition (from 9:15 till now)
-    if current.volume != df_today.volume.min():
+    # ignore first 3 candles for entry
+    if candle.name in df.iloc[:3].index:
         return None
 
-    # LONG
-    if direction == "LONG":
-        if current.close < current.open:  # RED candle
+    entry = candle.high if direction=="LONG" else candle.low
+    sl = candle.low if direction=="LONG" else candle.high
 
-            entry = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
-            sl = current.low
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return None
 
-            risk = entry - sl
-            if risk <= 0:
-                return None
+    qty = int(RISK_PER_TRADE / risk)
+    if qty <= 0:
+        return None
 
-            qty = int((CAPITAL * RISK_PER_TRADE) / risk)
-            return ("LONG", entry, sl, max(qty,1))
+    target = entry + (2*risk) if direction=="LONG" else entry - (2*risk)
 
-    # SHORT
-    if direction == "SHORT":
-        if current.close > current.open:  # GREEN candle
-
-            entry = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
-            sl = current.high
-
-            risk = sl - entry
-            if risk <= 0:
-                return None
-
-            qty = int((CAPITAL * RISK_PER_TRADE) / risk)
-            return ("SHORT", entry, sl, max(qty,1))
-
-    return None
+    return direction, entry, sl, target, qty
 
 # ================= PLACE TRADE =================
-def place_trade(symbol, side, entry, sl, qty):
-
+def place_trade(symbol, side, entry, sl, target, qty):
     global TRADES_COUNT
 
-    if symbol in TRADED_TODAY:
-        return
-
     try:
+        q_half = qty // 2
+        q_remain = qty - q_half
 
-        # ENTRY ORDER
-        ttype = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
-
+        # ENTRY
         kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange=kite.EXCHANGE_NSE,
             tradingsymbol=symbol,
-            transaction_type=ttype,
+            transaction_type=kite.TRANSACTION_TYPE_BUY if side=="LONG" else kite.TRANSACTION_TYPE_SELL,
             quantity=qty,
             order_type=kite.ORDER_TYPE_MARKET,
             product=kite.PRODUCT_MIS
         )
 
-        # STOP LOSS ORDER (SL-M)
-        sl_type = kite.TRANSACTION_TYPE_SELL if side == "LONG" else kite.TRANSACTION_TYPE_BUY
-
-        kite.place_order(
+        # SL-M
+        sl_id = kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange=kite.EXCHANGE_NSE,
             tradingsymbol=symbol,
-            transaction_type=sl_type,
+            transaction_type=kite.TRANSACTION_TYPE_SELL if side=="LONG" else kite.TRANSACTION_TYPE_BUY,
             quantity=qty,
-            order_type=kite.ORDER_TYPE_SL,
-            trigger_price=round(sl,2),
+            order_type=kite.ORDER_TYPE_SLM,
+            trigger_price=round(sl,1),
             product=kite.PRODUCT_MIS
         )
 
-        send_telegram(
-            f"🚨 TRADE EXECUTED\n{symbol}\n{side}\nEntry: {round(entry,2)}\nSL: {round(sl,2)}\nQty: {qty}"
+        # TARGET 50%
+        tgt_id = kite.place_order(
+            variety=kite.VARIETY_REGULAR,
+            exchange=kite.EXCHANGE_NSE,
+            tradingsymbol=symbol,
+            transaction_type=kite.TRANSACTION_TYPE_SELL if side=="LONG" else kite.TRANSACTION_TYPE_BUY,
+            quantity=q_half,
+            order_type=kite.ORDER_TYPE_LIMIT,
+            price=round(target,1),
+            product=kite.PRODUCT_MIS
         )
 
-        TRADED_TODAY.add(symbol)
+        ACTIVE_TRADES[symbol] = {
+            "side": side,
+            "entry": entry,
+            "sl_id": sl_id,
+            "tgt_id": tgt_id,
+            "remaining_qty": q_remain,
+            "half_done": False
+        }
+
         TRADES_COUNT += 1
+        TRADED_TODAY.add(symbol)
+
+        send_telegram(f"🚀 TRADE EXECUTED: {symbol}")
 
     except Exception as e:
-        send_telegram(f"Error placing trade {symbol}")
+        send_telegram(f"❌ Order Failed: {e}")
+
+# ================= TELEGRAM LISTENER =================
+def check_telegram_commands():
+    global LAST_UPDATE_ID
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            if LAST_UPDATE_ID:
+                url += f"?offset={LAST_UPDATE_ID + 1}"
+
+            res = requests.get(url).json()
+
+            for update in res.get("result", []):
+                LAST_UPDATE_ID = update["update_id"]
+
+                if "message" in update:
+                    text = update["message"].get("text", "").upper()
+
+                    if text.startswith("YES"):
+                        parts = text.split()
+
+                        if len(parts) == 2:
+                            symbol = parts[1]
+
+                            if symbol in PENDING_TRADES:
+                                trade = PENDING_TRADES.pop(symbol)
+
+                                place_trade(
+                                    symbol,
+                                    trade["side"],
+                                    trade["entry"],
+                                    trade["sl"],
+                                    trade["target"],
+                                    trade["qty"]
+                                )
+
+                                send_telegram(f"✅ CONFIRMED: {symbol}")
+
+        except Exception as e:
+            print("Telegram Error:", e)
+
+        time.sleep(5)
+
+# ================= MONITOR =================
+def monitor_trades():
+    while True:
+        try:
+            now = datetime.now().time()
+
+            if now >= datetime.strptime(EXIT_TIME,"%H:%M").time():
+                for symbol in list(ACTIVE_TRADES.keys()):
+                    close_trade(symbol)
+
+            for symbol, trade in list(ACTIVE_TRADES.items()):
+                orders = kite.orders()
+
+                sl = next((o for o in orders if o['order_id']==trade['sl_id']), None)
+                tgt = next((o for o in orders if o['order_id']==trade['tgt_id']), None)
+
+                if sl and sl['status']=="COMPLETE":
+                    if tgt and tgt['status']!="COMPLETE":
+                        kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=trade['tgt_id'])
+                    ACTIVE_TRADES.pop(symbol)
+
+                elif tgt and tgt['status']=="COMPLETE" and not trade['half_done']:
+                    kite.modify_order(
+                        variety=kite.VARIETY_REGULAR,
+                        order_id=trade['sl_id'],
+                        quantity=trade['remaining_qty'],
+                        trigger_price=round(trade['entry'],1)
+                    )
+                    trade['half_done'] = True
+
+            time.sleep(5)
+
+        except:
+            time.sleep(10)
+
+def close_trade(symbol):
+    try:
+        trade = ACTIVE_TRADES.get(symbol)
+        if trade:
+            kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=trade['sl_id'])
+            kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=trade['tgt_id'])
+
+            kite.place_order(
+                variety=kite.VARIETY_REGULAR,
+                exchange=kite.EXCHANGE_NSE,
+                tradingsymbol=symbol,
+                transaction_type=kite.TRANSACTION_TYPE_SELL if trade['side']=="LONG" else kite.TRANSACTION_TYPE_BUY,
+                quantity=trade['remaining_qty'],
+                order_type=kite.ORDER_TYPE_MARKET,
+                product=kite.PRODUCT_MIS
+            )
+
+            ACTIVE_TRADES.pop(symbol)
+    except:
+        pass
 
 # ================= BOT LOOP =================
 def bot_loop():
 
-    symbols = get_nifty200()
+    symbols = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","LT"]
     load_tokens(symbols)
 
-    send_telegram("🚀 Bot Started V3 (Final Strategy)")
+    send_telegram("🚀 V4.1 BOT STARTED (CONFIRMATION MODE)")
 
     while True:
-
         try:
-            now = datetime.now().time()
-
-            # Only trade between 9:30 and 10:30
-            if not (datetime.strptime("09:30","%H:%M").time() <= now <= datetime.strptime("10:30","%H:%M").time()):
-                time.sleep(30)
-                continue
-
-            if TRADES_COUNT >= MAX_TRADES:
-                time.sleep(30)
-                continue
-
             direction = get_market_bias()
 
             if direction is None:
@@ -220,11 +298,30 @@ def bot_loop():
                 if symbol in TRADED_TODAY:
                     continue
 
+                if TRADES_COUNT >= MAX_TRADES:
+                    continue
+
+                if symbol in PENDING_TRADES:
+                    continue
+
                 signal = check_signal(symbol, direction)
 
                 if signal:
-                    side, entry, sl, qty = signal
-                    place_trade(symbol, side, entry, sl, qty)
+                    side, entry, sl, target, qty = signal
+
+                    PENDING_TRADES[symbol] = {
+                        "side": side,
+                        "entry": entry,
+                        "sl": sl,
+                        "target": target,
+                        "qty": qty
+                    }
+
+                    send_telegram(
+                        f"📊 SIGNAL: {symbol}\n"
+                        f"{side}\nEntry: {entry}\nSL: {sl}\nTarget: {target}\n\n"
+                        f"Reply: YES {symbol}"
+                    )
 
             time.sleep(30)
 
@@ -233,11 +330,11 @@ def bot_loop():
 
 @app.route("/")
 def home():
-    return "V3 Bot Running"
+    return "V4.1 Running"
 
-thread = threading.Thread(target=bot_loop)
-thread.daemon = True
-thread.start()
+threading.Thread(target=bot_loop, daemon=True).start()
+threading.Thread(target=monitor_trades, daemon=True).start()
+threading.Thread(target=check_telegram_commands, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
