@@ -69,27 +69,21 @@ def get_candles(symbol):
     except:
         return None
 
-# 🔥 TREND DETECTION (NEW)
+# 🔥 SIMPLE TREND (IMPROVED)
 def get_trend(df_today):
 
-    if len(df_today) < 10:
+    if len(df_today) < 15:
         return None
 
-    recent = df_today.tail(10)
-
-    # Higher highs & higher lows → LONG
-    if recent['high'].iloc[-1] > recent['high'].iloc[0] and \
-       recent['low'].iloc[-1] > recent['low'].iloc[0]:
+    if df_today['close'].iloc[-1] > df_today['close'].iloc[-10]:
         return "LONG"
 
-    # Lower highs & lower lows → SHORT
-    if recent['high'].iloc[-1] < recent['high'].iloc[0] and \
-       recent['low'].iloc[-1] < recent['low'].iloc[0]:
+    elif df_today['close'].iloc[-1] < df_today['close'].iloc[-10]:
         return "SHORT"
 
     return None
 
-# 🔥 MAIN STRATEGY (UPGRADED)
+# 🔥 MAIN STRATEGY (V2)
 def scan_stock(symbol):
 
     df = get_candles(symbol)
@@ -98,43 +92,41 @@ def scan_stock(symbol):
         return None
 
     today = datetime.now().date()
-
     df_today = df[df['date'].dt.date == today].copy()
 
     if len(df_today) < 15:
         return None
 
-    # Time filter
+    # ⏰ TIME FILTER (UPDATED)
     now = datetime.now().time()
     if not (datetime.strptime("09:45","%H:%M").time() <= now <= datetime.strptime("15:00","%H:%M").time()):
         return None
 
-    # 🔥 STEP 1: Detect Trend
+    # 🔥 STEP 1: TREND
     trend = get_trend(df_today)
 
     if trend is None:
         return None
 
-    # 🔥 STEP 2: Find Pullback Zone (last 6 candles)
-    recent = df_today.tail(6)
+    # 🔥 STEP 2: PULLBACK WINDOW (INCREASED)
+    recent = df_today.tail(10)
 
-    # 🔥 STEP 3: Lowest volume candle
-    candle = recent.loc[recent['volume'].idxmin()]
+    # 🔥 STEP 3: LOW VOLUME (RELAXED)
+    low_vol_candles = recent.nsmallest(2, 'volume')
+    candle = low_vol_candles.iloc[-1]
 
     entry = None
     sl = None
     side = None
 
-    # 🔥 LONG SETUP
+    # 🟢 LONG SETUP
     if trend == "LONG" and candle.close < candle.open:
-
         entry = candle.high
         sl = candle.low
         side = "LONG"
 
-    # 🔥 SHORT SETUP
+    # 🔴 SHORT SETUP
     elif trend == "SHORT" and candle.close > candle.open:
-
         entry = candle.low
         sl = candle.high
         side = "SHORT"
@@ -185,7 +177,7 @@ def bot_loop():
     symbols = get_nifty200()
     load_tokens(symbols)
 
-    send_telegram("🚀 Bot Started (TREND BASED)")
+    send_telegram("🚀 Bot Started V2 (Trend + Pullback + Volume)")
 
     while True:
 
@@ -215,7 +207,7 @@ def bot_loop():
                         f"Qty: {qty}"
                     )
 
-                    # WAIT FOR BREAKOUT
+                    # BREAKOUT CONFIRMATION
                     ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
 
                     if side == "LONG" and ltp > entry:
