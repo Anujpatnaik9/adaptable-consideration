@@ -50,25 +50,6 @@ def load_tokens(symbols):
         if i["tradingsymbol"] in symbols:
             instrument_tokens[i["tradingsymbol"]] = i["instrument_token"]
 
-# MARKET DIRECTION
-def get_market_direction():
-    try:
-        url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        data = requests.get(url, headers=headers).json()
-
-        adv = data["advance"]["advances"]
-        dec = data["advance"]["declines"]
-
-        if adv > dec:
-            return "LONG"
-        elif dec > adv:
-            return "SHORT"
-    except:
-        pass
-
-    return None
-
 # GET CANDLES
 def get_candles(symbol):
     try:
@@ -88,73 +69,88 @@ def get_candles(symbol):
     except:
         return None
 
-# MAIN STRATEGY
-def scan_stock(symbol, direction):
+# 🔥 TREND DETECTION (NEW)
+def get_trend(df_today):
+
+    if len(df_today) < 10:
+        return None
+
+    recent = df_today.tail(10)
+
+    # Higher highs & higher lows → LONG
+    if recent['high'].iloc[-1] > recent['high'].iloc[0] and \
+       recent['low'].iloc[-1] > recent['low'].iloc[0]:
+        return "LONG"
+
+    # Lower highs & lower lows → SHORT
+    if recent['high'].iloc[-1] < recent['high'].iloc[0] and \
+       recent['low'].iloc[-1] < recent['low'].iloc[0]:
+        return "SHORT"
+
+    return None
+
+# 🔥 MAIN STRATEGY (UPGRADED)
+def scan_stock(symbol):
 
     df = get_candles(symbol)
 
-    if df is None or len(df) < 20:
+    if df is None or len(df) < 30:
         return None
 
     today = datetime.now().date()
 
     df_today = df[df['date'].dt.date == today].copy()
-    df_today = df_today[df_today['date'].dt.time >= datetime.strptime("09:15","%H:%M").time()]
 
-    if len(df_today) < 3:
+    if len(df_today) < 15:
         return None
 
     # Time filter
     now = datetime.now().time()
-    if not (datetime.strptime("09:30","%H:%M").time() <= now <= datetime.strptime("12:55","%H:%M").time()):
+    if not (datetime.strptime("09:45","%H:%M").time() <= now <= datetime.strptime("13:30","%H:%M").time()):
         return None
 
-    # Previous day levels
-    df_prev = df[df['date'].dt.date < today]
-    if df_prev.empty:
+    # 🔥 STEP 1: Detect Trend
+    trend = get_trend(df_today)
+
+    if trend is None:
         return None
 
-    pdh = df_prev.high.max()
-    pdl = df_prev.low.min()
+    # 🔥 STEP 2: Find Pullback Zone (last 6 candles)
+    recent = df_today.tail(6)
 
-    # Find lowest volume candle
-    candle = df_today.loc[df_today['volume'].idxmin()]
+    # 🔥 STEP 3: Lowest volume candle
+    candle = recent.loc[recent['volume'].idxmin()]
 
-    # LONG
-    if direction == "LONG":
+    entry = None
+    sl = None
+    side = None
 
-        if candle.close < candle.open and candle.high >= (0.995 * pdh):
+    # 🔥 LONG SETUP
+    if trend == "LONG" and candle.close < candle.open:
 
-            entry = candle.high
-            sl = candle.low
-            risk = entry - sl
+        entry = candle.high
+        sl = candle.low
+        side = "LONG"
 
-            if risk <= 0:
-                return None
+    # 🔥 SHORT SETUP
+    elif trend == "SHORT" and candle.close > candle.open:
 
-            qty = int((CAPITAL * RISK_PER_TRADE) / risk)
-            target = entry + (2 * risk)
+        entry = candle.low
+        sl = candle.high
+        side = "SHORT"
 
-            return ("LONG", entry, sl, target, max(qty, 1))
+    if entry is None:
+        return None
 
-    # SHORT
-    if direction == "SHORT":
+    risk = abs(entry - sl)
 
-        if candle.close > candle.open and candle.low <= (1.005 * pdl):
+    if risk <= 0:
+        return None
 
-            entry = candle.low
-            sl = candle.high
-            risk = sl - entry
+    qty = int((CAPITAL * RISK_PER_TRADE) / risk)
+    target = entry + (2 * risk) if side == "LONG" else entry - (2 * risk)
 
-            if risk <= 0:
-                return None
-
-            qty = int((CAPITAL * RISK_PER_TRADE) / risk)
-            target = entry - (2 * risk)
-
-            return ("SHORT", entry, sl, target, max(qty, 1))
-
-    return None
+    return (side, entry, sl, target, max(qty, 1))
 
 # PLACE TRADE
 def place_trade(symbol, side, entry, sl, target, qty):
@@ -178,7 +174,7 @@ def place_trade(symbol, side, entry, sl, target, qty):
         product=kite.PRODUCT_MIS
     )
 
-    send_telegram(f"✅ TRADE EXECUTED: {symbol} | {side} | Qty: {qty}")
+    send_telegram(f"✅ TRADE EXECUTED\n{symbol} | {side}\nQty: {qty}")
 
     TRADED_TODAY.add(symbol)
     TRADES_COUNT += 1
@@ -189,16 +185,11 @@ def bot_loop():
     symbols = get_nifty200()
     load_tokens(symbols)
 
-    send_telegram("🚀 Bot Started")
+    send_telegram("🚀 Bot Started (TREND BASED)")
 
     while True:
 
         try:
-            direction = get_market_direction()
-
-            if direction is None:
-                time.sleep(30)
-                continue
 
             for symbol in symbols:
 
@@ -208,16 +199,20 @@ def bot_loop():
                 if TRADES_COUNT >= MAX_TRADES:
                     continue
 
-                signal = scan_stock(symbol, direction)
+                signal = scan_stock(symbol)
 
                 if signal:
 
                     side, entry, sl, target, qty = signal
 
-                    # Alert
+                    # ALERT
                     send_telegram(
                         f"{'🟢 LONG' if side=='LONG' else '🔴 SHORT'} SETUP\n"
-                        f"{symbol}\nEntry: {round(entry,2)}\nSL: {round(sl,2)}\nTarget: {round(target,2)}"
+                        f"{symbol}\n"
+                        f"Entry: {round(entry,2)}\n"
+                        f"SL: {round(sl,2)}\n"
+                        f"Target: {round(target,2)}\n"
+                        f"Qty: {qty}"
                     )
 
                     # WAIT FOR BREAKOUT
@@ -231,7 +226,8 @@ def bot_loop():
 
             time.sleep(30)
 
-        except:
+        except Exception as e:
+            print("Error:", e)
             time.sleep(10)
 
 @app.route("/")
