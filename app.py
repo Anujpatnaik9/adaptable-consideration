@@ -17,7 +17,6 @@ MAX_TRADES = 2
 
 ENTRY_START = "09:30"
 ENTRY_END = "14:30"
-EXIT_TIME = "15:15"
 
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
@@ -98,8 +97,10 @@ def check_signal(symbol, direction):
     if not (datetime.strptime(ENTRY_START,"%H:%M").time() <= now <= datetime.strptime(ENTRY_END,"%H:%M").time()):
         return None
 
+    # Find LOWEST VOLUME candle of the day
     candle = df.loc[df['volume'].idxmin()]
 
+    # Ignore first 3 candles
     if candle.name in df.iloc[:3].index:
         return None
 
@@ -122,12 +123,13 @@ def check_signal(symbol, direction):
 def place_trade(symbol, side, entry, sl, target, qty):
 
     if not is_market_open():
-        send_telegram("⛔ Market closed. Trade not executed.")
+        send_telegram("⛔ Market is closed. Trade NOT executed.")
         return False
 
     try:
         ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
 
+        # MARKET ORDER
         kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange=kite.EXCHANGE_NSE,
@@ -138,6 +140,7 @@ def place_trade(symbol, side, entry, sl, target, qty):
             product=kite.PRODUCT_MIS
         )
 
+        # STOP LOSS ORDER
         kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange=kite.EXCHANGE_NSE,
@@ -180,17 +183,24 @@ def check_telegram_commands():
 
                     # TEST MODE
                     if text == "TEST":
-                        PENDING_TRADES["RELIANCE"] = {
-                            "side": "LONG",
-                            "entry": 100,
-                            "sl": 95,
-                            "target": 110,
-                            "qty": 10
-                        }
-                        send_telegram("🧪 TEST SIGNAL: RELIANCE\nReply YES RELIANCE")
+                        if "RELIANCE" not in PENDING_TRADES:
+                            PENDING_TRADES["RELIANCE"] = {
+                                "side": "LONG",
+                                "entry": 100,
+                                "sl": 95,
+                                "target": 110,
+                                "qty": 10
+                            }
+                            send_telegram("🧪 TEST SIGNAL: RELIANCE\nReply YES RELIANCE")
 
                     # CONFIRMATION
                     if text.startswith("YES"):
+
+                        # 🔴 BLOCK IF MARKET CLOSED
+                        if not is_market_open():
+                            send_telegram("⛔ Market is closed. Trade will NOT be executed.")
+                            continue
+
                         parts = text.split()
 
                         if len(parts) == 2:
@@ -224,7 +234,7 @@ def bot_loop():
     symbols = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","LT"]
     load_tokens(symbols)
 
-    send_telegram("🚀 V4.3 BOT STARTED (FINAL CLEAN VERSION)")
+    send_telegram("🚀 V4.3.1 BOT STARTED (FINAL PRODUCTION)")
 
     while True:
         try:
@@ -271,7 +281,7 @@ def bot_loop():
 
 @app.route("/")
 def home():
-    return "V4.3 Running"
+    return "V4.3.1 Running"
 
 threading.Thread(target=bot_loop, daemon=True).start()
 threading.Thread(target=check_telegram_commands, daemon=True).start()
