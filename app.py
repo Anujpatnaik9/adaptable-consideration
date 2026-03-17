@@ -9,7 +9,8 @@ ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL_PER_TRADE = 250000
+TOTAL_CAPITAL = 500000
+RISK_PER_TRADE = 5000
 MAX_TRADES = 2
 EXIT_TIME = datetime.strptime("15:15", "%H:%M").time()
 
@@ -24,54 +25,18 @@ LAST_UPDATE_ID = None
 SELECTED_SECTORS = []
 DIRECTION = None
 
-# ================= FINAL F&O STOCKS =================
+# ================= SECTORS =================
 SECTOR_STOCKS = {
-
-    "AUTO": [
-        "MARUTI","TATAMOTORS","M&M","EICHERMOT","HEROMOTOCO","TVSMOTOR","ASHOKLEY","BAJAJ-AUTO",
-        "MRF","BALKRISIND","BOSCHLTD","MOTHERSON","EXIDEIND"
-    ],
-
-    "PHARMA": [
-        "SUNPHARMA","DRREDDY","CIPLA","DIVISLAB","LUPIN","AUROPHARMA",
-        "ALKEM","BIOCON","TORNTPHARM","ZYDUSLIFE","GLENMARK","ABBOTINDIA"
-    ],
-
-    "BANK": [
-        "HDFCBANK","ICICIBANK","AXISBANK","KOTAKBANK","SBIN","INDUSINDBK",
-        "BANDHANBNK","BAJFINANCE","LICHSGFIN","CHOLAFIN","BAJAJFINSV","RBLBANK",
-        "PNB","BANKBARODA","IDFCFIRSTB","FEDERALBNK","CANBK","MUTHOOTFIN","AUBANK","MANAPPURAM"
-    ],
-
-    "IT": [
-        "TCS","INFY","HCLTECH","WIPRO","TECHM",
-        "LTIM","PERSISTENT","MPHASIS","COFORGE"
-    ],
-
-    "METAL": [
-        "TATASTEEL","JSWSTEEL","HINDALCO","VEDL","SAIL"
-    ],
-
-    "FMCG": [
-        "ITC","HINDUNILVR","NESTLEIND","BRITANNIA",
-        "DABUR","GODREJCP","MARICO","COLPAL","UBL"
-    ],
-
-    "ENERGY": [
-        "RELIANCE","ONGC","IOC","BPCL","GAIL"
-    ],
-
-    "REALTY": [
-        "DLF","GODREJPROP","OBEROIRLTY","PHOENIXLTD","PRESTIGE"
-    ],
-
-    "FINANCE": [
-        "BAJFINANCE","BAJAJFINSV","CHOLAFIN","MUTHOOTFIN"
-    ],
-
-    "PSU": [
-        "BEL","HAL","BHEL","COALINDIA"
-    ]
+    "AUTO": ["MARUTI","TATAMOTORS","M&M","EICHERMOT","HEROMOTOCO","TVSMOTOR","ASHOKLEY","BAJAJ-AUTO","MRF","BALKRISIND","BOSCHLTD","MOTHERSON","EXIDEIND"],
+    "PHARMA": ["SUNPHARMA","DRREDDY","CIPLA","DIVISLAB","LUPIN","AUROPHARMA","ALKEM","BIOCON","TORNTPHARM","ZYDUSLIFE","GLENMARK","ABBOTINDIA"],
+    "BANK": ["HDFCBANK","ICICIBANK","AXISBANK","KOTAKBANK","SBIN","INDUSINDBK","BANDHANBNK","BAJFINANCE","LICHSGFIN","CHOLAFIN","BAJAJFINSV","RBLBANK","PNB","BANKBARODA","IDFCFIRSTB","FEDERALBNK","CANBK","MUTHOOTFIN","AUBANK","MANAPPURAM"],
+    "IT": ["TCS","INFY","HCLTECH","WIPRO","TECHM","LTIM","PERSISTENT","MPHASIS","COFORGE"],
+    "METAL": ["TATASTEEL","JSWSTEEL","HINDALCO","VEDL","SAIL"],
+    "FMCG": ["ITC","HINDUNILVR","NESTLEIND","BRITANNIA","DABUR","GODREJCP","MARICO","COLPAL","UBL"],
+    "ENERGY": ["RELIANCE","ONGC","IOC","BPCL","GAIL"],
+    "REALTY": ["DLF","GODREJPROP","OBEROIRLTY","PHOENIXLTD","PRESTIGE"],
+    "FINANCE": ["BAJFINANCE","BAJAJFINSV","CHOLAFIN","MUTHOOTFIN"],
+    "PSU": ["BEL","HAL","BHEL","COALINDIA"]
 }
 
 # ================= TELEGRAM =================
@@ -138,15 +103,21 @@ def execute_trade(symbol):
     if TRADES_COUNT >= MAX_TRADES:
         return
 
-    ltp_data = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]
-    ltp = ltp_data["last_price"]
-    token = ltp_data["instrument_token"]
-
-    qty = int(CAPITAL_PER_TRADE / ltp)
+    data = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]
+    ltp = data["last_price"]
 
     side = PENDING_SIGNALS[symbol]["side"]
-    sl = PENDING_SIGNALS[symbol]["sl"]
+    sl_price = PENDING_SIGNALS[symbol]["sl"]
 
+    risk_per_share = abs(ltp - sl_price)
+    if risk_per_share == 0:
+        return
+
+    qty = int(RISK_PER_TRADE / risk_per_share)
+    if qty <= 0:
+        return
+
+    # ENTRY
     kite.place_order(
         variety=kite.VARIETY_REGULAR,
         exchange=kite.EXCHANGE_NSE,
@@ -157,6 +128,7 @@ def execute_trade(symbol):
         product=kite.PRODUCT_MIS
     )
 
+    # SL-M ORDER
     sl_id = kite.place_order(
         variety=kite.VARIETY_REGULAR,
         exchange=kite.EXCHANGE_NSE,
@@ -164,72 +136,91 @@ def execute_trade(symbol):
         transaction_type=kite.TRANSACTION_TYPE_SELL if side=="LONG" else kite.TRANSACTION_TYPE_BUY,
         quantity=qty,
         order_type=kite.ORDER_TYPE_SLM,
-        trigger_price=round(sl,1),
+        trigger_price=round(sl_price,1),
         product=kite.PRODUCT_MIS
     )
 
     ACTIVE_TRADES[symbol] = {
         "side": side,
         "entry": ltp,
-        "sl": sl,
+        "sl": sl_price,
         "qty": qty,
         "sl_id": sl_id,
         "half_done": False
     }
 
     TRADES_COUNT += 1
-    send_telegram(f"TRADE EXECUTED: {symbol}")
+    send_telegram(f"TRADE EXECUTED: {symbol} | Qty: {qty}")
 
-# ================= MONITOR =================
+# ================= MONITOR (SAFETY FIXED) =================
 def monitor():
     while True:
-        for symbol, trade in list(ACTIVE_TRADES.items()):
-            ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
+        try:
+            orders = kite.orders()
 
-            risk = abs(trade["entry"] - trade["sl"])
-            target = trade["entry"] + 2*risk if trade["side"]=="LONG" else trade["entry"] - 2*risk
+            for symbol, trade in list(ACTIVE_TRADES.items()):
 
-            if not trade["half_done"]:
-                if (trade["side"]=="LONG" and ltp >= target) or (trade["side"]=="SHORT" and ltp <= target):
+                # 🔴 CHECK SL STATUS FIRST (CRITICAL FIX)
+                sl_order = next((o for o in orders if o["order_id"] == trade["sl_id"]), None)
 
-                    qty_half = trade["qty"] // 2
+                if sl_order and sl_order["status"] == "COMPLETE":
+                    send_telegram(f"🛑 SL HIT: {symbol} — Trade Closed Safely")
+                    ACTIVE_TRADES.pop(symbol)
+                    continue  # 🚫 STOP EVERYTHING FOR THIS TRADE
 
+                ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
+
+                risk = abs(trade["entry"] - trade["sl"])
+                target = trade["entry"] + 2*risk if trade["side"]=="LONG" else trade["entry"] - 2*risk
+
+                # 🎯 TARGET LOGIC (ONLY IF TRADE STILL ACTIVE)
+                if not trade["half_done"]:
+                    if (trade["side"]=="LONG" and ltp >= target) or (trade["side"]=="SHORT" and ltp <= target):
+
+                        qty_half = trade["qty"] // 2
+
+                        kite.place_order(
+                            variety=kite.VARIETY_REGULAR,
+                            exchange=kite.EXCHANGE_NSE,
+                            tradingsymbol=symbol,
+                            transaction_type=kite.TRANSACTION_TYPE_SELL if trade["side"]=="LONG" else kite.TRANSACTION_TYPE_BUY,
+                            quantity=qty_half,
+                            order_type=kite.ORDER_TYPE_MARKET,
+                            product=kite.PRODUCT_MIS
+                        )
+
+                        # MOVE SL TO COST
+                        kite.modify_order(
+                            variety=kite.VARIETY_REGULAR,
+                            order_id=trade["sl_id"],
+                            trigger_price=round(trade["entry"],1)
+                        )
+
+                        trade["half_done"] = True
+                        send_telegram(f"🎯 TARGET HIT: {symbol} | SL → COST")
+
+                # ⏰ 3:15 EXIT
+                if datetime.now().time() >= EXIT_TIME:
                     kite.place_order(
                         variety=kite.VARIETY_REGULAR,
                         exchange=kite.EXCHANGE_NSE,
                         tradingsymbol=symbol,
                         transaction_type=kite.TRANSACTION_TYPE_SELL if trade["side"]=="LONG" else kite.TRANSACTION_TYPE_BUY,
-                        quantity=qty_half,
+                        quantity=trade["qty"],
                         order_type=kite.ORDER_TYPE_MARKET,
                         product=kite.PRODUCT_MIS
                     )
+                    ACTIVE_TRADES.pop(symbol)
 
-                    kite.modify_order(
-                        variety=kite.VARIETY_REGULAR,
-                        order_id=trade["sl_id"],
-                        trigger_price=round(trade["entry"],1)
-                    )
+            time.sleep(5)
 
-                    trade["half_done"] = True
-                    send_telegram(f"TARGET HIT: {symbol}")
-
-            if datetime.now().time() >= EXIT_TIME:
-                kite.place_order(
-                    variety=kite.VARIETY_REGULAR,
-                    exchange=kite.EXCHANGE_NSE,
-                    tradingsymbol=symbol,
-                    transaction_type=kite.TRANSACTION_TYPE_SELL if trade["side"]=="LONG" else kite.TRANSACTION_TYPE_BUY,
-                    quantity=trade["qty"],
-                    order_type=kite.ORDER_TYPE_MARKET,
-                    product=kite.PRODUCT_MIS
-                )
-                ACTIVE_TRADES.pop(symbol)
-
-        time.sleep(5)
+        except Exception as e:
+            print("Monitor Error:", e)
+            time.sleep(5)
 
 # ================= MAIN =================
 def run_bot():
-    send_telegram("🚀 V5.2 FINAL BOT STARTED")
+    send_telegram("🚀 V5.4 BOT STARTED (SAFETY LOCK ENABLED)")
 
     while True:
         try:
@@ -255,6 +246,7 @@ def run_bot():
                 signal = check_signal(df)
 
                 if signal and symbol not in PENDING_SIGNALS:
+
                     last = df.iloc[-1]
 
                     PENDING_SIGNALS[symbol] = {
@@ -262,7 +254,7 @@ def run_bot():
                         "sl": last["low"] if signal=="LONG" else last["high"]
                     }
 
-                    send_telegram(f"ALERT: {symbol} {signal}\nReply YES {symbol}")
+                    send_telegram(f"📊 ALERT: {symbol} {signal}\nReply YES {symbol}")
 
             time.sleep(60)
 
