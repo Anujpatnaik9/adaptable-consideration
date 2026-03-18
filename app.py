@@ -1,6 +1,7 @@
 import os, time, requests
 import pandas as pd
 from datetime import datetime
+import pytz
 from kiteconnect import KiteConnect
 
 # ================= CONFIG =================
@@ -17,12 +18,15 @@ EXIT_TIME = datetime.strptime("15:15", "%H:%M").time()
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
 
+# ===== TIMEZONE FIX =====
+IST = pytz.timezone("Asia/Kolkata")
+
 # ================= GLOBALS =================
 TRADES_COUNT = 0
 ACTIVE_TRADES = {}
 PENDING_SIGNALS = {}
 LAST_UPDATE_ID = None
-SELECTED_SECTORS = []
+SELECTED_SECTORS = set()   # ✅ FIX (no duplicates)
 DIRECTION = None
 
 # ================= SECTORS =================
@@ -57,23 +61,38 @@ def read_telegram():
             continue
 
         LAST_UPDATE_ID = update_id
+
+        if "message" not in item or "text" not in item["message"]:
+            continue
+
         msg = item["message"]["text"].upper()
 
-        if "HIGH" in msg:
-            sector = msg.split()[0]
-            if sector in SECTOR_STOCKS:
-                SELECTED_SECTORS.append(sector)
-                DIRECTION = "LONG"
-                send_telegram(f"{sector} added for LONG")
+        # ✅ FIX: MULTI-LINE SUPPORT
+        lines = msg.split("\n")
 
-        elif "LOW" in msg:
-            sector = msg.split()[0]
-            if sector in SECTOR_STOCKS:
-                SELECTED_SECTORS.append(sector)
-                DIRECTION = "SHORT"
-                send_telegram(f"{sector} added for SHORT")
+        for line in lines:
+            words = line.strip().split()
 
-        elif msg.startswith("YES"):
+            if len(words) < 2:
+                continue
+
+            sector = words[0]
+            action = words[1]
+
+            if sector in SECTOR_STOCKS:
+
+                if action == "HIGH":
+                    SELECTED_SECTORS.add(sector)
+                    DIRECTION = "LONG"
+                    send_telegram(f"{sector} added for LONG")
+
+                elif action == "LOW":
+                    SELECTED_SECTORS.add(sector)
+                    DIRECTION = "SHORT"
+                    send_telegram(f"{sector} added for SHORT")
+
+        # YES execution
+        if msg.startswith("YES"):
             symbol = msg.split()[-1]
             if symbol in PENDING_SIGNALS:
                 execute_trade(symbol)
@@ -117,7 +136,6 @@ def execute_trade(symbol):
     if qty <= 0:
         return
 
-    # ENTRY
     kite.place_order(
         variety=kite.VARIETY_REGULAR,
         exchange=kite.EXCHANGE_NSE,
@@ -128,7 +146,6 @@ def execute_trade(symbol):
         product=kite.PRODUCT_MIS
     )
 
-    # SL-M ORDER
     sl_id = kite.place_order(
         variety=kite.VARIETY_REGULAR,
         exchange=kite.EXCHANGE_NSE,
@@ -152,7 +169,7 @@ def execute_trade(symbol):
     TRADES_COUNT += 1
     send_telegram(f"TRADE EXECUTED: {symbol} | Qty: {qty}")
 
-# ================= MONITOR (SAFETY FIXED) =================
+# ================= MONITOR =================
 def monitor():
     while True:
         try:
@@ -160,20 +177,18 @@ def monitor():
 
             for symbol, trade in list(ACTIVE_TRADES.items()):
 
-                # 🔴 CHECK SL STATUS FIRST (CRITICAL FIX)
                 sl_order = next((o for o in orders if o["order_id"] == trade["sl_id"]), None)
 
                 if sl_order and sl_order["status"] == "COMPLETE":
-                    send_telegram(f"🛑 SL HIT: {symbol} — Trade Closed Safely")
+                    send_telegram(f"🛑 SL HIT: {symbol}")
                     ACTIVE_TRADES.pop(symbol)
-                    continue  # 🚫 STOP EVERYTHING FOR THIS TRADE
+                    continue
 
                 ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
 
                 risk = abs(trade["entry"] - trade["sl"])
                 target = trade["entry"] + 2*risk if trade["side"]=="LONG" else trade["entry"] - 2*risk
 
-                # 🎯 TARGET LOGIC (ONLY IF TRADE STILL ACTIVE)
                 if not trade["half_done"]:
                     if (trade["side"]=="LONG" and ltp >= target) or (trade["side"]=="SHORT" and ltp <= target):
 
@@ -189,7 +204,6 @@ def monitor():
                             product=kite.PRODUCT_MIS
                         )
 
-                        # MOVE SL TO COST
                         kite.modify_order(
                             variety=kite.VARIETY_REGULAR,
                             order_id=trade["sl_id"],
@@ -197,10 +211,9 @@ def monitor():
                         )
 
                         trade["half_done"] = True
-                        send_telegram(f"🎯 TARGET HIT: {symbol} | SL → COST")
+                        send_telegram(f"🎯 TARGET HIT: {symbol}")
 
-                # ⏰ 3:15 EXIT
-                if datetime.now().time() >= EXIT_TIME:
+                if datetime.now(IST).time() >= EXIT_TIME:
                     kite.place_order(
                         variety=kite.VARIETY_REGULAR,
                         exchange=kite.EXCHANGE_NSE,
@@ -220,7 +233,7 @@ def monitor():
 
 # ================= MAIN =================
 def run_bot():
-    send_telegram("🚀 V5.4 BOT STARTED (SAFETY LOCK ENABLED)")
+    send_telegram("🚀 V5.5 BOT STARTED (FINAL FIXED)")
 
     while True:
         try:
@@ -234,10 +247,12 @@ def run_bot():
 
                 token = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["instrument_token"]
 
+                now = datetime.now(IST)  # ✅ FIX
+
                 data = kite.historical_data(
                     token,
-                    datetime.now().replace(hour=9, minute=15),
-                    datetime.now(),
+                    now.replace(hour=9, minute=15),
+                    now,
                     "5minute"
                 )
 
