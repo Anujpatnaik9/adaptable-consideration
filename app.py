@@ -18,7 +18,6 @@ EXIT_TIME = datetime.strptime("15:15", "%H:%M").time()
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
 
-# ===== TIMEZONE FIX =====
 IST = pytz.timezone("Asia/Kolkata")
 
 # ================= GLOBALS =================
@@ -26,7 +25,7 @@ TRADES_COUNT = 0
 ACTIVE_TRADES = {}
 PENDING_SIGNALS = {}
 LAST_UPDATE_ID = None
-SELECTED_SECTORS = set()   # ✅ FIX (no duplicates)
+SELECTED_SECTORS = set()
 DIRECTION = None
 
 # ================= SECTORS =================
@@ -66,13 +65,10 @@ def read_telegram():
             continue
 
         msg = item["message"]["text"].upper()
-
-        # ✅ FIX: MULTI-LINE SUPPORT
         lines = msg.split("\n")
 
         for line in lines:
             words = line.strip().split()
-
             if len(words) < 2:
                 continue
 
@@ -91,7 +87,6 @@ def read_telegram():
                     DIRECTION = "SHORT"
                     send_telegram(f"{sector} added for SHORT")
 
-        # YES execution
         if msg.startswith("YES"):
             symbol = msg.split()[-1]
             if symbol in PENDING_SIGNALS:
@@ -231,12 +226,22 @@ def monitor():
             print("Monitor Error:", e)
             time.sleep(5)
 
+# ================= 🔥 CANDLE CLOSE FIX =================
+def wait_for_candle_close():
+    while True:
+        now = datetime.now(IST)
+        if now.minute % 5 == 0 and now.second < 3:
+            return
+        time.sleep(1)
+
 # ================= MAIN =================
 def run_bot():
-    send_telegram("🚀 V5.5 BOT STARTED (FINAL FIXED)")
+    send_telegram("🚀 V5.6 BOT STARTED (CANDLE CLOSE FIXED)")
 
     while True:
         try:
+            wait_for_candle_close()  # 🔥 FIX APPLIED
+
             read_telegram()
 
             stocks_to_scan = []
@@ -247,7 +252,7 @@ def run_bot():
 
                 token = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["instrument_token"]
 
-                now = datetime.now(IST)  # ✅ FIX
+                now = datetime.now(IST)
 
                 data = kite.historical_data(
                     token,
@@ -270,8 +275,6 @@ def run_bot():
                     }
 
                     send_telegram(f"📊 ALERT: {symbol} {signal}\nReply YES {symbol}")
-
-            time.sleep(60)
 
         except Exception as e:
             print("Error:", e)
