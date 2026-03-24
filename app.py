@@ -1,15 +1,3 @@
-==============================================================
-
-
-FINAL V6.3 FULL BOT (ALL SECTORS + ALL STOCKS + UPGRADE FIX)
-
-
-PRODUCTION READY - COPY PASTE
-
-
-==============================================================
-
-
 import os, time, requests
 import pandas as pd
 from datetime import datetime
@@ -315,3 +303,4 @@ read_telegram()
 
 threading.Thread(target=monitor).start()
 scanner()
+
