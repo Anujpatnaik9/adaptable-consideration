@@ -6,7 +6,7 @@ from kiteconnect import KiteConnect
 import threading
 
 
-================= CONFIG =================
+# ================= CONFIG =================
 
 
 API_KEY = os.getenv("KITE_API_KEY")
@@ -26,7 +26,7 @@ kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
 
 
-================= GLOBALS =================
+# ================= GLOBALS =================
 
 
 TRADES_TODAY = 0
@@ -37,7 +37,7 @@ DIRECTION = None
 SELECTED_SECTORS = set()
 
 
-================= FULL SECTORS =================
+# ================= FULL SECTORS =================
 
 
 SECTOR_STOCKS = {
@@ -54,7 +54,7 @@ SECTOR_STOCKS = {
 }
 
 
-================= TELEGRAM =================
+# ================= TELEGRAM =================
 
 
 def send_telegram(msg):
@@ -98,7 +98,7 @@ for item in res.get("result", []):
 
 
 
-================= DATA =================
+# ================= DATA =================
 
 
 def get_data(symbol):
@@ -121,7 +121,7 @@ except:
 
 
 
-================= SIGNAL =================
+# ================= SIGNAL =================
 
 
 def check_signal(df):
@@ -139,7 +139,7 @@ return None
 
 
 
-================= EXECUTION =================
+# ================= EXECUTION =================
 
 
 def place_entry(symbol, side, entry, qty):
@@ -176,7 +176,7 @@ except:
 pass
 
 
-================= TRADE =================
+# ================= TRADE =================
 
 
 def execute_trade(symbol):
@@ -203,7 +203,7 @@ send_telegram(f"ORDER PLACED {symbol}")
 
 
 
-================= MONITOR =================
+# ================= MONITOR =================
 
 
 def monitor():
@@ -260,7 +260,7 @@ while True:
 
 
 
-================= SCANNER =================
+# ================= SCANNER =================
 
 
 def scanner():
@@ -298,7 +298,7 @@ read_telegram()
 
 
 
-================= START =================
+# ================= START =================
 
 
 threading.Thread(target=monitor).start()
