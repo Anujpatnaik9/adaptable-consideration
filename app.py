@@ -141,92 +141,10 @@ def execute_trade(symbol):
         product=kite.PRODUCT_MIS
     )
 
-    sl_id = kite.place_order(
-        variety=kite.VARIETY_REGULAR,
-        exchange=kite.EXCHANGE_NSE,
-        tradingsymbol=symbol,
-        transaction_type=kite.TRANSACTION_TYPE_SELL if side=="LONG" else kite.TRANSACTION_TYPE_BUY,
-        quantity=qty,
-        order_type=kite.ORDER_TYPE_SLM,
-        trigger_price=round(sl_price,1),
-        product=kite.PRODUCT_MIS
-    )
-
-    ACTIVE_TRADES[symbol] = {
-        "side": side,
-        "entry": ltp,
-        "sl": sl_price,
-        "qty": qty,
-        "sl_id": sl_id,
-        "half_done": False
-    }
-
-    TRADES_COUNT += 1
     send_telegram(f"TRADE EXECUTED: {symbol} | Qty: {qty}")
+    TRADES_COUNT += 1
 
-# ================= MONITOR =================
-def monitor():
-    while True:
-        try:
-            orders = kite.orders()
-
-            for symbol, trade in list(ACTIVE_TRADES.items()):
-
-                sl_order = next((o for o in orders if o["order_id"] == trade["sl_id"]), None)
-
-                if sl_order and sl_order["status"] == "COMPLETE":
-                    send_telegram(f"🛑 SL HIT: {symbol}")
-                    ACTIVE_TRADES.pop(symbol)
-                    continue
-
-                ltp = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["last_price"]
-
-                risk = abs(trade["entry"] - trade["sl"])
-                target = trade["entry"] + 2*risk if trade["side"]=="LONG" else trade["entry"] - 2*risk
-
-                if not trade["half_done"]:
-                    if (trade["side"]=="LONG" and ltp >= target) or (trade["side"]=="SHORT" and ltp <= target):
-
-                        qty_half = trade["qty"] // 2
-
-                        kite.place_order(
-                            variety=kite.VARIETY_REGULAR,
-                            exchange=kite.EXCHANGE_NSE,
-                            tradingsymbol=symbol,
-                            transaction_type=kite.TRANSACTION_TYPE_SELL if trade["side"]=="LONG" else kite.TRANSACTION_TYPE_BUY,
-                            quantity=qty_half,
-                            order_type=kite.ORDER_TYPE_MARKET,
-                            product=kite.PRODUCT_MIS
-                        )
-
-                        kite.modify_order(
-                            variety=kite.VARIETY_REGULAR,
-                            order_id=trade["sl_id"],
-                            trigger_price=round(trade["entry"],1)
-                        )
-
-                        trade["half_done"] = True
-                        send_telegram(f"🎯 TARGET HIT: {symbol}")
-
-                if datetime.now(IST).time() >= EXIT_TIME:
-                    kite.place_order(
-                        variety=kite.VARIETY_REGULAR,
-                        exchange=kite.EXCHANGE_NSE,
-                        tradingsymbol=symbol,
-                        transaction_type=kite.TRANSACTION_TYPE_SELL if trade["side"]=="LONG" else kite.TRANSACTION_TYPE_BUY,
-                        quantity=trade["qty"],
-                        order_type=kite.ORDER_TYPE_MARKET,
-                        product=kite.PRODUCT_MIS
-                    )
-                    ACTIVE_TRADES.pop(symbol)
-
-            time.sleep(5)
-
-        except Exception as e:
-            print("Monitor Error:", e)
-            time.sleep(5)
-
-# ================= 🔥 CANDLE CLOSE FIX =================
+# ================= TIME =================
 def wait_for_candle_close():
     while True:
         now = datetime.now(IST)
@@ -236,12 +154,11 @@ def wait_for_candle_close():
 
 # ================= MAIN =================
 def run_bot():
-    send_telegram("🚀 V5.6 BOT STARTED (CANDLE CLOSE FIXED)")
+    send_telegram("🚀 V5.6 BOT STARTED")
 
     while True:
         try:
-            wait_for_candle_close() # 🔥 FIX APPLIED
-
+            wait_for_candle_close()
             read_telegram()
 
             stocks_to_scan = []
@@ -269,12 +186,35 @@ def run_bot():
 
                     last = df.iloc[-1]
 
+                    entry = round(last["high"], 2) if signal=="LONG" else round(last["low"], 2)
+                    sl = round(last["low"], 2) if signal=="LONG" else round(last["high"], 2)
+
+                    risk = abs(entry - sl)
+                    if risk == 0:
+                        continue
+
+                    qty = int(RISK_PER_TRADE / risk)
+                    if qty <= 0:
+                        continue
+
+                    capital = int(entry * qty)
+                    target = round(entry + 2*risk, 2) if signal=="LONG" else round(entry - 2*risk, 2)
+
                     PENDING_SIGNALS[symbol] = {
                         "side": signal,
-                        "sl": last["low"] if signal=="LONG" else last["high"]
+                        "sl": sl
                     }
 
-                    send_telegram(f"📊 ALERT: {symbol} {signal}\nReply YES {symbol}")
+                    send_telegram(
+                        f"📊 ALERT: {symbol} {signal}\n\n"
+                        f"Entry : {entry}\n"
+                        f"SL : {sl}\n"
+                        f"Risk : {round(risk,2)}\n\n"
+                        f"Qty : {qty}\n"
+                        f"Capital : ₹{capital}\n\n"
+                        f"Target (2R) : {target}\n\n"
+                        f"Reply YES {symbol}"
+                    )
 
         except Exception as e:
             print("Error:", e)
@@ -282,6 +222,4 @@ def run_bot():
 
 # ================= START =================
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=monitor).start()
     run_bot()
