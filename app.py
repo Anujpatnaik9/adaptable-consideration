@@ -265,16 +265,29 @@ def run_bot():
 
                 signal = check_signal(df)
 
-                if signal and symbol not in PENDING_SIGNALS:
+                if signal:
 
-                    last = df.iloc[-1]
+    last = df.iloc[-1]
 
-                    PENDING_SIGNALS[symbol] = {
-                        "side": signal,
-                        "sl": last["low"] if signal=="LONG" else last["high"]
-                    }
+    # ================= RE-ENTRY LOGIC =================
+    if symbol in PENDING_SIGNALS:
+        old_sl = PENDING_SIGNALS[symbol]["sl"]
+        new_sl = last["low"] if signal=="LONG" else last["high"]
 
-                    send_telegram(f"📊 ALERT: {symbol} {signal}\nReply YES {symbol}")
+        # If new candle is better (lower volume already ensured)
+        if new_sl != old_sl:
+            PENDING_SIGNALS.pop(symbol)
+            send_telegram(f"♻️ UPDATED SIGNAL: {symbol} (Better candle found)")
+        else:
+            continue
+    # =================================================
+
+    PENDING_SIGNALS[symbol] = {
+        "side": signal,
+        "sl": last["low"] if signal=="LONG" else last["high"]
+    }
+
+    send_telegram(f"📊 ALERT: {symbol} {signal}\nReply YES {symbol}")
 
         except Exception as e:
             print("Error:", e)
