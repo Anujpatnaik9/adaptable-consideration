@@ -21,16 +21,20 @@ def send_telegram(msg):
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 def run_backtest():
-    send_telegram("🧠 Running SMART Backtest (50% Square-off + Trail SL to Cost)...")
-    total_pnl = 0
-    wins, losses, breakevens = 0, 0, 0
+    send_telegram("🎯 Running Final UNFILTERED Backtest (Smart Exit Enabled)...")
+    total_pnl, wins, losses, breakevens = 0, 0, 0, 0
     
     for symbol in STOCKS:
         try:
+            # Fetch data (150 days)
             inst = kite.ltp(f"NSE:{symbol}")
             token = inst[f"NSE:{symbol}"]["instrument_token"]
+            to_dt = datetime.now()
+            from_dt = to_dt - timedelta(days=150)
             
-            df = pd.DataFrame(kite.historical_data(token, datetime.now()-timedelta(days=150), datetime.now(), "5minute"))
+            # Simplified data fetch to ensure we get results
+            data = kite.historical_data(token, from_dt, to_dt, "5minute")
+            df = pd.DataFrame(data)
             df['date'] = pd.to_datetime(df['date'])
             
             for date, day_data in df.groupby(df['date'].dt.date):
@@ -39,46 +43,40 @@ def run_backtest():
                     if trades_today >= 2: break
                     curr = day_data.iloc[i]
                     
-                    # Filters: Time (9:30-10:30) + Low Vol + 0.2% Body
+                    # 1. TIME FILTER ONLY (9:30 - 10:30)
                     if datetime.strptime("09:30", "%H:%M").time() <= curr['date'].time() <= datetime.strptime("10:30", "%H:%M").time():
-                        if curr['volume'] == day_data.iloc[:i+1]['volume'].min() and (curr['high']-curr['low']) >= (curr['close']*0.002):
+                        
+                        # 2. LOW VOLUME SIGNAL
+                        if curr['volume'] == day_data.iloc[:i+1]['volume'].min():
                             
-                            if curr['close'] < curr['open']: # LONG Scenario
-                                entry = curr['high']
-                                initial_sl = curr['low']
-                                risk = entry - initial_sl
-                                target1 = entry + risk       # 1:1 Ratio
-                                target2 = entry + (risk * 2) # 1:2 Ratio
-                                
-                                # Track the trade
-                                t1_hit = False
-                                for _, future in day_data.iloc[i+1:].iterrows():
-                                    # Case 1: Hit T1 (Book 50%, Move SL to Cost)
-                                    if not t1_hit and future['high'] >= target1:
+                            # LONG Scenario: Entry @ High, SL @ Low
+                            entry, sl = curr['high'], curr['low']
+                            risk = entry - sl
+                            if risk <= 0: continue
+                            
+                            t1, t2 = entry + risk, entry + (risk * 2)
+                            t1_hit = False
+                            
+                            for _, future in day_data.iloc[i+1:].iterrows():
+                                if not t1_hit:
+                                    if future['high'] >= t1:
                                         t1_hit = True
-                                        total_pnl += (RISK_PER_TRADE / 2) # Profit on first half
-                                    
-                                    # Case 2: Hit Initial SL (Before T1)
-                                    if not t1_hit and future['low'] <= initial_sl:
-                                        total_pnl -= RISK_PER_TRADE
+                                        total_pnl += (RISK_PER_TRADE / 2) # Profit 50%
+                                    elif future['low'] <= sl:
+                                        total_pnl -= RISK_PER_TRADE # Full Loss
                                         losses += 1; trades_today += 1; break
-                                        
-                                    # Case 3: Hit Target 2 (After T1)
-                                    if t1_hit and future['high'] >= target2:
-                                        total_pnl += (RISK_PER_TRADE) # Profit on second half (1:2)
+                                else:
+                                    if future['high'] >= t2:
+                                        total_pnl += RISK_PER_TRADE # Profit other 50%
                                         wins += 1; trades_today += 1; break
-                                        
-                                    # Case 4: Hit Trail SL at Cost (After T1)
-                                    if t1_hit and future['low'] <= entry:
-                                        # Second half exits at 0 profit/loss
+                                    elif future['low'] <= entry: # Trailing SL at Cost
                                         breakevens += 1; trades_today += 1; break
-            time.sleep(0.5)
+            time.sleep(0.3)
         except: continue
 
-    report = (f"📈 SMART SCORECARD\n"
-              f"Strategy: 50% Book @ 1:1 + Trail SL\n"
+    report = (f"📈 SMART UNFILTERED SCORE\n"
               f"Full Wins (1:2): {wins}\n"
-              f"Partial Wins (Hit T1 then Cost): {breakevens}\n"
+              f"Partial Wins (1:1 + Cost): {breakevens}\n"
               f"Full Losses: {losses}\n"
               f"-------------------\n"
               f"Net PnL: Rs. {total_pnl:.0f}")
