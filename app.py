@@ -21,64 +21,72 @@ def send_telegram(msg):
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 def run_backtest():
-    send_telegram("⏳ Running STAGE 2 Backtest (9:30-10:30 Only)...")
+    send_telegram("🚀 Running FINAL Backtest (Time + Body Filter)...")
     total_wins, total_losses, total_profit = 0, 0, 0
     
     for symbol in STOCKS:
         try:
             inst = kite.ltp(f"NSE:{symbol}")
             token = inst[f"NSE:{symbol}"]["instrument_token"]
+            last_price = inst[f"NSE:{symbol}"]["last_price"]
             
+            # Fetch data
             to_date = datetime.now()
             from_date = to_date - timedelta(days=DAYS_TO_TEST)
             mid_date = to_date - timedelta(days=75)
             
-            df = pd.DataFrame(kite.historical_data(token, from_date, mid_date, "5minute") + 
-                             kite.historical_data(token, mid_date, to_date, "5minute"))
+            data = kite.historical_data(token, from_date, mid_date, "5minute") + \
+                   kite.historical_data(token, mid_date, to_date, "5minute")
+            df = pd.DataFrame(data)
             df['date'] = pd.to_datetime(df['date'])
             
             for date, day_data in df.groupby(df['date'].dt.date):
                 trades_today = 0
                 if len(day_data) < 10: continue
                 
-                # Scan candles
                 for i in range(3, len(day_data)):
-                    if trades_today >= 2: break # Max 2 trades per stock/day rule
+                    if trades_today >= 2: break
                     
-                    current_candle = day_data.iloc[i]
-                    candle_time = current_candle['date'].time()
+                    curr = day_data.iloc[i]
+                    c_time = curr['date'].time()
                     
-                    # --- NEW TIME FILTER ---
-                    if datetime.strptime("09:30", "%H:%M").time() <= candle_time <= datetime.strptime("10:30", "%H:%M").time():
+                    # 1. TIME FILTER (9:30 - 10:30)
+                    if datetime.strptime("09:30", "%H:%M").time() <= c_time <= datetime.strptime("10:30", "%H:%M").time():
                         
-                        history_so_far = day_data.iloc[:i+1]
-                        if current_candle['volume'] == history_so_far['volume'].min():
-                            # Logic: If Red, try LONG at High
-                            if current_candle['close'] < current_candle['open']:
-                                entry, sl = current_candle['high'], current_candle['low']
-                                risk = entry - sl
-                                if risk <= 0: continue
-                                target = entry + (risk * 2)
-                                
-                                for _, future in day_data.iloc[i+1:].iterrows():
-                                    if future['high'] >= target:
-                                        total_wins += 1
-                                        total_profit += (RISK_PER_TRADE * 2)
-                                        trades_today += 1
-                                        break
-                                    if future['low'] <= sl:
-                                        total_losses += 1
-                                        total_profit -= RISK_PER_TRADE
-                                        trades_today += 1
-                                        break
+                        # 2. VOLUME FILTER (Lowest so far)
+                        history = day_data.iloc[:i+1]
+                        if curr['volume'] == history['volume'].min():
+                            
+                            # 3. BODY FILTER (Candle must be > 0.2% of stock price to avoid 'noise')
+                            candle_range = curr['high'] - curr['low']
+                            min_range = curr['close'] * 0.002 # 0.2%
+                            
+                            if candle_range >= min_range:
+                                # Logic: Red Candle = LONG at High
+                                if curr['close'] < curr['open']:
+                                    entry, sl = curr['high'], curr['low']
+                                    target = entry + ((entry - sl) * 2)
+                                    
+                                    for _, future in day_data.iloc[i+1:].iterrows():
+                                        if future['high'] >= target:
+                                            total_wins += 1
+                                            total_profit += (RISK_PER_TRADE * 2)
+                                            trades_today += 1
+                                            break
+                                        if future['low'] <= sl:
+                                            total_losses += 1
+                                            total_profit -= RISK_PER_TRADE
+                                            trades_today += 1
+                                            break
             time.sleep(0.6)
         except: continue
 
-    report = (f"📊 FINAL SCORECARD (STRICT)\n"
-              f"Time: 9:30 - 10:30 AM\n"
-              f"Trades: {total_wins + total_losses}\n"
-              f"Wins: {total_wins} ✅ | Losses: {total_losses} ❌\n"
-              f"Win Rate: {(total_wins/(total_wins+total_losses)*100 if total_wins+total_losses > 0 else 0):.1f}%\n"
+    win_rate = (total_wins/(total_wins+total_losses)*100) if (total_wins+total_losses) > 0 else 0
+    report = (f"📊 FINAL CLEAN SCORECARD\n"
+              f"Filters: 9:30-10:30 + 0.2% Body\n"
+              f"Total Trades: {total_wins + total_losses}\n"
+              f"Wins: {total_wins} | Losses: {total_losses}\n"
+              f"Win Rate: {win_rate:.1f}%\n"
               f"Net Profit: Rs. {total_profit}")
     send_telegram(report)
 
