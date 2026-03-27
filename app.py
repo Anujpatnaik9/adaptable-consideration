@@ -21,73 +21,67 @@ def send_telegram(msg):
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 def run_backtest():
-    send_telegram("🚀 Running FINAL Backtest (Time + Body Filter)...")
-    total_wins, total_losses, total_profit = 0, 0, 0
+    send_telegram("🧠 Running SMART Backtest (50% Square-off + Trail SL to Cost)...")
+    total_pnl = 0
+    wins, losses, breakevens = 0, 0, 0
     
     for symbol in STOCKS:
         try:
             inst = kite.ltp(f"NSE:{symbol}")
             token = inst[f"NSE:{symbol}"]["instrument_token"]
-            last_price = inst[f"NSE:{symbol}"]["last_price"]
             
-            # Fetch data
-            to_date = datetime.now()
-            from_date = to_date - timedelta(days=DAYS_TO_TEST)
-            mid_date = to_date - timedelta(days=75)
-            
-            data = kite.historical_data(token, from_date, mid_date, "5minute") + \
-                   kite.historical_data(token, mid_date, to_date, "5minute")
-            df = pd.DataFrame(data)
+            df = pd.DataFrame(kite.historical_data(token, datetime.now()-timedelta(days=150), datetime.now(), "5minute"))
             df['date'] = pd.to_datetime(df['date'])
             
             for date, day_data in df.groupby(df['date'].dt.date):
                 trades_today = 0
-                if len(day_data) < 10: continue
-                
                 for i in range(3, len(day_data)):
                     if trades_today >= 2: break
-                    
                     curr = day_data.iloc[i]
-                    c_time = curr['date'].time()
                     
-                    # 1. TIME FILTER (9:30 - 10:30)
-                    if datetime.strptime("09:30", "%H:%M").time() <= c_time <= datetime.strptime("10:30", "%H:%M").time():
-                        
-                        # 2. VOLUME FILTER (Lowest so far)
-                        history = day_data.iloc[:i+1]
-                        if curr['volume'] == history['volume'].min():
+                    # Filters: Time (9:30-10:30) + Low Vol + 0.2% Body
+                    if datetime.strptime("09:30", "%H:%M").time() <= curr['date'].time() <= datetime.strptime("10:30", "%H:%M").time():
+                        if curr['volume'] == day_data.iloc[:i+1]['volume'].min() and (curr['high']-curr['low']) >= (curr['close']*0.002):
                             
-                            # 3. BODY FILTER (Candle must be > 0.2% of stock price to avoid 'noise')
-                            candle_range = curr['high'] - curr['low']
-                            min_range = curr['close'] * 0.002 # 0.2%
-                            
-                            if candle_range >= min_range:
-                                # Logic: Red Candle = LONG at High
-                                if curr['close'] < curr['open']:
-                                    entry, sl = curr['high'], curr['low']
-                                    target = entry + ((entry - sl) * 2)
+                            if curr['close'] < curr['open']: # LONG Scenario
+                                entry = curr['high']
+                                initial_sl = curr['low']
+                                risk = entry - initial_sl
+                                target1 = entry + risk       # 1:1 Ratio
+                                target2 = entry + (risk * 2) # 1:2 Ratio
+                                
+                                # Track the trade
+                                t1_hit = False
+                                for _, future in day_data.iloc[i+1:].iterrows():
+                                    # Case 1: Hit T1 (Book 50%, Move SL to Cost)
+                                    if not t1_hit and future['high'] >= target1:
+                                        t1_hit = True
+                                        total_pnl += (RISK_PER_TRADE / 2) # Profit on first half
                                     
-                                    for _, future in day_data.iloc[i+1:].iterrows():
-                                        if future['high'] >= target:
-                                            total_wins += 1
-                                            total_profit += (RISK_PER_TRADE * 2)
-                                            trades_today += 1
-                                            break
-                                        if future['low'] <= sl:
-                                            total_losses += 1
-                                            total_profit -= RISK_PER_TRADE
-                                            trades_today += 1
-                                            break
-            time.sleep(0.6)
+                                    # Case 2: Hit Initial SL (Before T1)
+                                    if not t1_hit and future['low'] <= initial_sl:
+                                        total_pnl -= RISK_PER_TRADE
+                                        losses += 1; trades_today += 1; break
+                                        
+                                    # Case 3: Hit Target 2 (After T1)
+                                    if t1_hit and future['high'] >= target2:
+                                        total_pnl += (RISK_PER_TRADE) # Profit on second half (1:2)
+                                        wins += 1; trades_today += 1; break
+                                        
+                                    # Case 4: Hit Trail SL at Cost (After T1)
+                                    if t1_hit and future['low'] <= entry:
+                                        # Second half exits at 0 profit/loss
+                                        breakevens += 1; trades_today += 1; break
+            time.sleep(0.5)
         except: continue
 
-    win_rate = (total_wins/(total_wins+total_losses)*100) if (total_wins+total_losses) > 0 else 0
-    report = (f"📊 FINAL CLEAN SCORECARD\n"
-              f"Filters: 9:30-10:30 + 0.2% Body\n"
-              f"Total Trades: {total_wins + total_losses}\n"
-              f"Wins: {total_wins} | Losses: {total_losses}\n"
-              f"Win Rate: {win_rate:.1f}%\n"
-              f"Net Profit: Rs. {total_profit}")
+    report = (f"📈 SMART SCORECARD\n"
+              f"Strategy: 50% Book @ 1:1 + Trail SL\n"
+              f"Full Wins (1:2): {wins}\n"
+              f"Partial Wins (Hit T1 then Cost): {breakevens}\n"
+              f"Full Losses: {losses}\n"
+              f"-------------------\n"
+              f"Net PnL: Rs. {total_pnl:.0f}")
     send_telegram(report)
 
 if __name__ == "__main__":
