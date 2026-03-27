@@ -44,7 +44,7 @@ try:
         time_str = row["date"].strftime("%H:%M")
 
         is_green = row["close"] > row["open"]
-        is_lowest = row["volume"] <= lowest_vol
+        is_lowest = row["volume"] == lowest_vol
 
         msg += (
             f"{time_str} | "
