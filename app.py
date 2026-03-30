@@ -147,8 +147,13 @@ def check_signal(df, symbol):
 
     # RULE 1: Volume comparison includes ALL candles
     # including first 3! This makes filter stronger!
-    lowest_vol = df["volume"].min()
-    is_lowest = last["volume"] <= lowest_vol
+    # Look at all candles EXCEPT the current one 
+    historical_data = df.iloc[:-1] 
+    historical_min = historical_data["volume"].min()
+
+    # Check if the current candle is truly LOWER than the record
+    is_lowest = last["volume"] < historical_min
+   
 
     is_green = last["close"] > last["open"]
     is_red = last["close"] < last["open"]
