@@ -17,9 +17,10 @@ IST = pytz.timezone("Asia/Kolkata")
 
 # ================= GLOBALS =================
 LAST_UPDATE_ID = None
-SELECTED_SECTOR = None
+SELECTED_SECTORS = set()
 DIRECTION = None
 LAST_PROCESSED_MINUTE = -1
+ALERTED_STOCKS = set()
 
 # ================= SECTORS =================
 SECTOR_STOCKS = {
@@ -44,7 +45,7 @@ def send_telegram(msg):
         print("Telegram error:", e)
 
 def read_telegram():
-    global LAST_UPDATE_ID, SELECTED_SECTOR, DIRECTION
+    global LAST_UPDATE_ID, DIRECTION
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
@@ -65,27 +66,43 @@ def read_telegram():
                 continue
 
             msg = item["message"].get("text", "").upper().strip()
+
+            if msg == "CLEAR":
+                SELECTED_SECTORS.clear()
+                send_telegram("❌ All sectors cleared")
+                return
+
             words = msg.split()
 
             if len(words) == 2 and words[0] in SECTOR_STOCKS:
-                SELECTED_SECTOR = words[0]
-                DIRECTION = words[1]
+                sector = words[0]
+                direction = words[1]
 
-                send_telegram(f"✅ Tracking {SELECTED_SECTOR} | Direction: {DIRECTION}")
+                SELECTED_SECTORS.add(sector)
+                DIRECTION = direction
+
+                send_telegram(f"✅ Added {sector} | Direction: {direction}")
 
     except Exception as e:
         send_telegram(f"Telegram error: {e}")
 
 # ================= STRATEGY =================
 def check_signal(df):
-    if len(df) < 6:
+    if len(df) < 7:
         return None
+
+    # ✅ Remove last unstable candle
+    df = df[:-1]
 
     last = df.iloc[-1]
     prev = df.iloc[:-1]
 
-    # ✅ Lowest volume of the day
-    if last["volume"] > prev["volume"].min():
+    # ✅ Strict lowest volume of day
+    if last["volume"] != prev["volume"].min():
+        return None
+
+    # ✅ Extra safety: must be lower than previous candle
+    if last["volume"] >= df.iloc[-2]["volume"]:
         return None
 
     # LONG (HIGH)
@@ -110,25 +127,27 @@ def check_signal(df):
 def run_bot():
     global LAST_PROCESSED_MINUTE
 
-    send_telegram("🚀 ALERT BOT STARTED (30s DELAY MODE)")
+    send_telegram("🚀 PRO BOT STARTED (45s DELAY | ACCURATE MODE)")
 
     while True:
         try:
             read_telegram()
 
-            if not SELECTED_SECTOR or not DIRECTION:
+            if not SELECTED_SECTORS or not DIRECTION:
                 time.sleep(1)
                 continue
 
             now = datetime.now(IST)
 
-            # ✅ Run once per candle AFTER 30 seconds
-            if now.minute % 5 == 0 and now.second >= 30 and now.minute != LAST_PROCESSED_MINUTE:
+            # ✅ Run once per candle AFTER 45 sec
+            if now.minute % 5 == 0 and now.second >= 45 and now.minute != LAST_PROCESSED_MINUTE:
                 LAST_PROCESSED_MINUTE = now.minute
 
-                stocks = SECTOR_STOCKS.get(SELECTED_SECTOR, [])
+                stocks = []
+                for s in SELECTED_SECTORS:
+                    stocks.extend(SECTOR_STOCKS.get(s, []))
 
-                for symbol in stocks:
+                for symbol in set(stocks):
                     try:
                         token = kite.ltp(f"NSE:{symbol}")[f"NSE:{symbol}"]["instrument_token"]
 
@@ -144,10 +163,12 @@ def run_bot():
 
                         sig = check_signal(df)
 
-                        if sig:
+                        if sig and symbol not in ALERTED_STOCKS:
+                            ALERTED_STOCKS.add(symbol)
+
                             send_telegram(
                                 f"🚨 ALERT: {symbol} {sig['side']}\n"
-                                f"Lowest Volume Candle\n"
+                                f"Strict Lowest Volume\n"
                                 f"Entry: {sig['entry']} | SL: {sig['sl']}"
                             )
 
