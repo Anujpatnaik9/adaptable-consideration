@@ -227,16 +227,29 @@ def execute_trade(symbol):
     t1 = signal["t1"]
 
     # Calculate quantity
-    risk_per_share = abs(entry - sl)
-    if risk_per_share == 0:
-        return
+    # === NEW SAFE SL MATH START ===
+    # 1. Calculate raw gap
+    raw_gap = abs(entry - sl)
+    
+    # 2. Apply Accountant's Safety Floors (0.75 or 0.20%)
+    min_gap = max(0.75, entry * 0.0020)
+    
+    # 3. Final Risk used for Qty and Target
+    risk_per_share = max(raw_gap, min_gap)
+
+    # 4. Update SL and T1 to match the new "Breathing Room"
+    if side == "LONG":
+        sl = round(entry - risk_per_share, 1)
+        t1 = round(entry + (risk_per_share * 2), 1)
+    else:
+        sl = round(entry + risk_per_share, 1)
+        t1 = round(entry - (risk_per_share * 2), 1)
 
     qty = int(RISK_PER_TRADE / risk_per_share)
-    if qty <= 0:
-        send_telegram(f"Quantity too low for {symbol}! Skipping.")
-        return
+    # === NEW SAFE SL MATH END ===
 
     try:
+        
         # Place main entry order
         main_order_id = kite.place_order(
             variety = kite.VARIETY_REGULAR,
