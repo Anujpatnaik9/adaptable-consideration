@@ -152,7 +152,7 @@ def check_signal(df):
     # STRICT volume check (friend's fix):
     # Condition 1: Must be STRICTLY lowest volume of day
     # Including candles 1,2,3 in comparison!
-    if last["volume"] != prev["volume"].min():
+    if last["volume"] > prev["volume"].min():
         return None
 
     # Condition 2: Must also be lower than previous candle
