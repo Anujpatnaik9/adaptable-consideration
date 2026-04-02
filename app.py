@@ -137,43 +137,50 @@ def send_status():
 # 5. Entry = LOW of candle (SHORT) / HIGH of candle (LONG)
 # 6. SL = HIGH of candle (SHORT) / LOW of candle (LONG)
 
-def check_signal(df):
-    # Need at least a few candles to compare volume
-    if len(df) < 2:
+def check_signal(df, symbol):
+    # 1. Need at least 4 candles (9:30 AM onwards as per Kushal Sir's rule)
+    if len(df) < 4:
         return None
 
-    # 1. GET DATA
-    last = df.iloc[-1]       # The most recent CLOSED 5-minute candle
-    previous_data = df.iloc[:-1] # Every candle before the current one today
+    # 2. Separate current closed candle from the morning's history
+    last = df.iloc[-1] 
+    previous_candles = df.iloc[:-1] 
     
-    # 2. THE VOLUME RULE (The "Absolute Lowest" Audit)
-    # If the current candle's volume is NOT the lowest of the day, REJECT.
-    current_volume = last["volume"]
-    lowest_volume_so_far = previous_data["volume"].min()
+    # 3. Get the lowest volume seen today BEFORE this candle
+    hist_min_vol = previous_candles["volume"].min()
+    current_vol = last["volume"]
 
-    if current_volume > lowest_volume_so_far:
+    # 4. STRICT VOLUME CHECK: Current must be LOWER than the previous minimum
+    if current_vol >= hist_min_vol:
         return None
 
-    # 3. THE COLOR & DIRECTION RULE
-    # Logic: Green Candle = Short Opportunity | Red Candle = Long Opportunity
-    is_green = last["close"] > last["open"]
-    is_red = last["close"] < last["open"]
+    # 5. DIRECTION LOGIC (Strictly based on Candle Color)
+    
+    # LONG Setup (Direction HIGH): Red Candle + Lowest Volume
+    if DIRECTION == "HIGH" and last["close"] < last["open"]:
+        risk = last["high"] - last["low"]
+        if risk <= 0: return None # Safety check to avoid division by zero
+        
+        return {
+            "side": "LONG", 
+            "entry": round(last["high"], 2),
+            "sl": round(last["low"], 2), 
+            "risk": round(risk, 2),
+            "t1": round(last["high"] + (risk * 2), 2)
+        }
 
-    # --- SHORT SIDE (Looking for a Green 'Weakness' Candle) ---
-    if DIRECTION == "LOW" and is_green:
-        entry = round(last["low"], 2)
-        sl = round(last["high"], 2)
-        risk = round(sl - entry, 2)
-        t1 = round(entry - (risk * 2), 2)
-        return {"side": "SHORT", "entry": entry, "sl": sl, "t1": t1}
-
-    # --- LONG SIDE (Looking for a Red 'Weakness' Candle) ---
-    elif DIRECTION == "HIGH" and is_red:
-        entry = round(last["high"], 2)
-        sl = round(last["low"], 2)
-        risk = round(entry - sl, 2)
-        t1 = round(entry + (risk * 2), 2)
-        return {"side": "LONG", "entry": entry, "sl": sl, "t1": t1}
+    # SHORT Setup (Direction LOW): Green Candle + Lowest Volume
+    if DIRECTION == "LOW" and last["close"] > last["open"]:
+        risk = last["high"] - last["low"]
+        if risk <= 0: return None # Safety check to avoid division by zero
+        
+        return {
+            "side": "SHORT", 
+            "entry": round(last["low"], 2),
+            "sl": round(last["high"], 2), 
+            "risk": round(risk, 2),
+            "t1": round(last["low"] - (risk * 2), 2)
+        }
 
     return None
 
