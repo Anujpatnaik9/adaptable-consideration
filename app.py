@@ -45,7 +45,7 @@ def retry(func, retries=3, delay=2):
             return func()
         except Exception as e:
             if i == retries - 1:
-                send_telegram(f"ERROR ❌: {str(e)}")
+                send_telegram(f"ERROR: {str(e)}")
                 raise
             time.sleep(delay)
 
@@ -142,7 +142,6 @@ def manage_trade(symbol, direction, entry, sl, qty):
 
         if not sl_moved:
             if (direction == "LONG" and ltp >= target) or (direction == "SHORT" and ltp <= target):
-
                 retry(lambda: kite.place_order(
                     variety=kite.VARIETY_REGULAR,
                     exchange=kite.EXCHANGE_NSE,
@@ -153,12 +152,9 @@ def manage_trade(symbol, direction, entry, sl, qty):
                     product=kite.PRODUCT_MIS
                 ))
 
-                send_telegram(f"{symbol} 🎯 Target hit | 50% booked")
-
+                send_telegram(f"{symbol} Target hit | 50% booked")
                 place_sl(symbol, direction, entry, qty - half_qty)
-
                 send_telegram("SL moved to Cost")
-
                 sl_moved = True
 
         now = datetime.now(TIMEZONE)
@@ -172,27 +168,21 @@ def manage_trade(symbol, direction, entry, sl, qty):
                 order_type=kite.ORDER_TYPE_MARKET,
                 product=kite.PRODUCT_MIS
             ))
-
             send_telegram(f"{symbol} closed at 3:15")
-
             active_trades.pop(symbol, None)
             break
-
         time.sleep(2)
 
 # ================= TELEGRAM HANDLER =================
 def handle_message(update, context):
     global active_trades
-
     try:
         text = update.message.text.strip().upper()
         parts = text.split()
-
         if len(parts) != 2:
             return
 
         direction, symbol = parts
-
         send_telegram(f"Signal Received: {direction} {symbol}")
 
         if len(active_trades) >= MAX_ACTIVE_TRADES:
@@ -212,7 +202,6 @@ def handle_message(update, context):
             sl = round_to_tick(high * (1 + BUFFER_PERCENT), "UP")
 
         qty = calculate_qty(entry, sl)
-
         order_id = place_entry(symbol, direction, entry, qty)
 
         active_trades[symbol] = {
@@ -221,11 +210,8 @@ def handle_message(update, context):
         }
 
         entry_price = wait_for_execution(order_id)
-
         send_telegram(f"{symbol} Executed at {entry_price}")
-
         place_sl(symbol, direction, sl, qty)
-
         manage_trade(symbol, direction, entry_price, sl, qty)
 
     except Exception as e:
@@ -236,7 +222,6 @@ send_telegram("Bot Restarted & Running")
 
 updater = Updater(TELEGRAM_TOKEN)
 dp = updater.dispatcher
-
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
 updater.start_polling()
