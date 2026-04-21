@@ -3,3 +3,4 @@ kiteconnect
 requests
 pandas
 pytz
+python-telegram-bot==13.15
