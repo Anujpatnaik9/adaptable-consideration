@@ -1,17 +1,20 @@
-
 import time
 import math
 import requests
+import os
 from datetime import datetime, timedelta
 import pytz
 from kiteconnect import KiteConnect
 from telegram.ext import Updater, MessageHandler, Filters
 
 # ================= CONFIG =================
-API_KEY = "YOUR_KITE_API_KEY"
-ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+API_KEY = os.getenv("API_KEY")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+if not all([API_KEY, ACCESS_TOKEN, TELEGRAM_TOKEN, CHAT_ID]):
+    raise Exception("Missing environment variables")
 
 RISK_PER_TRADE = 1000
 MAX_CAPITAL_PER_TRADE = 250000
@@ -28,7 +31,6 @@ kite.set_access_token(ACCESS_TOKEN)
 active_trades = {}
 
 # ================= TELEGRAM =================
-
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -37,7 +39,6 @@ def send_telegram(msg):
         pass
 
 # ================= RETRY =================
-
 def retry(func, retries=3, delay=2):
     for i in range(retries):
         try:
@@ -49,7 +50,6 @@ def retry(func, retries=3, delay=2):
             time.sleep(delay)
 
 # ================= UTIL =================
-
 def round_to_tick(price, direction):
     if direction == "UP":
         return math.ceil(price / TICK_SIZE) * TICK_SIZE
@@ -67,15 +67,13 @@ def get_last_candle(symbol):
     data = kite.historical_data(inst, start, end, "5minute")
     candle = data[-1]
 
-    return candle['high'], candle['low']
+    return candle["high"], candle["low"]
 
 
 def calculate_qty(entry, sl):
     risk_per_share = abs(entry - sl)
-
     qty_risk = RISK_PER_TRADE / risk_per_share
     qty_cap = MAX_CAPITAL_PER_TRADE / entry
-
     return max(1, int(min(qty_risk, qty_cap)))
 
 
@@ -85,13 +83,11 @@ def cancel_order(order_id):
             variety=kite.VARIETY_REGULAR,
             order_id=order_id
         ))
-        send_telegram(f"Previous order cancelled")
+        send_telegram("Previous order cancelled")
     except:
         pass
 
-
 # ================= ORDER FUNCTIONS =================
-
 def place_entry(symbol, direction, entry, qty):
     def order():
         return kite.place_order(
@@ -106,7 +102,7 @@ def place_entry(symbol, direction, entry, qty):
             product=kite.PRODUCT_MIS
         )
     order_id = retry(order)
-    send_telegram(f"{symbol} {direction} Order Placed\nEntry: {entry} Qty: {qty}")
+    send_telegram(f"{symbol} {direction} Order Placed | Entry: {entry} Qty: {qty}")
     return order_id
 
 
@@ -130,15 +126,13 @@ def wait_for_execution(order_id):
     while True:
         orders = kite.orders()
         for o in orders:
-            if o['order_id'] == order_id and o['status'] == "COMPLETE":
-                return o['average_price']
+            if o["order_id"] == order_id and o["status"] == "COMPLETE":
+                return o["average_price"]
         time.sleep(2)
 
-
 # ================= TRADE MANAGEMENT =================
-
 def manage_trade(symbol, direction, entry, sl, qty):
-    target = entry + 2*(entry - sl) if direction == "LONG" else entry - 2*(sl - entry)
+    target = entry + 2 * (entry - sl) if direction == "LONG" else entry - 2 * (sl - entry)
     half_qty = qty // 2
 
     sl_moved = False
@@ -179,18 +173,15 @@ def manage_trade(symbol, direction, entry, sl, qty):
                 product=kite.PRODUCT_MIS
             ))
 
-            send_telegram(f"{symbol} closed at 3:15 ⏰")
+            send_telegram(f"{symbol} closed at 3:15")
 
             active_trades.pop(symbol, None)
             break
 
         time.sleep(2)
 
-
 # ================= TELEGRAM HANDLER =================
-
 def handle_message(update, context):
-
     global active_trades
 
     try:
@@ -205,7 +196,7 @@ def handle_message(update, context):
         send_telegram(f"Signal Received: {direction} {symbol}")
 
         if len(active_trades) >= MAX_ACTIVE_TRADES:
-            send_telegram("Max 2 active trades reached ❌")
+            send_telegram("Max 2 active trades reached")
             return
 
         if symbol in active_trades:
@@ -238,12 +229,10 @@ def handle_message(update, context):
         manage_trade(symbol, direction, entry_price, sl, qty)
 
     except Exception as e:
-        send_telegram(f"CRITICAL ERROR ❌: {str(e)}")
-
+        send_telegram(f"CRITICAL ERROR: {str(e)}")
 
 # ================= RUN =================
-
-send_telegram("Bot Restarted & Running ✅")
+send_telegram("Bot Restarted & Running")
 
 updater = Updater(TELEGRAM_TOKEN)
 dp = updater.dispatcher
