@@ -8,11 +8,13 @@ from kiteconnect import KiteConnect
 from telegram.ext import Updater, MessageHandler, Filters
 
 # ================= CONFIG =================
-API_KEY = os.getenv("API_KEY")
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+# I have updated these names to match your Railway screenshot EXACTLY
+API_KEY = os.getenv("KITE_API_KEY")
+ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Safety check
 if not all([API_KEY, ACCESS_TOKEN, TELEGRAM_TOKEN, CHAT_ID]):
     raise Exception("Missing environment variables")
 
@@ -73,10 +75,7 @@ def calculate_qty(entry, sl):
 
 def cancel_order(order_id):
     try:
-        retry(lambda: kite.cancel_order(
-            variety=kite.VARIETY_REGULAR,
-            order_id=order_id
-        ))
+        retry(lambda: kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=order_id))
         send_telegram("Previous order cancelled")
     except:
         pass
@@ -184,10 +183,7 @@ def handle_message(update, context):
             sl = round_to_tick(high * (1 + BUFFER_PERCENT), "UP")
         qty = calculate_qty(entry, sl)
         order_id = place_entry(symbol, direction, entry, qty)
-        active_trades[symbol] = {
-            "order_id": order_id,
-            "direction": direction
-        }
+        active_trades[symbol] = {"order_id": order_id, "direction": direction}
         entry_price = wait_for_execution(order_id)
         send_telegram(f"{symbol} Executed at {entry_price}")
         place_sl(symbol, direction, sl, qty)
@@ -196,7 +192,16 @@ def handle_message(update, context):
         send_telegram(f"CRITICAL ERROR: {str(e)}")
 
 # ================= RUN =================
-send_telegram("Bot Restarted & Running")
+startup_msg = (
+    "V5.9 BOT STARTED!\n"
+    "Kushal Sir's Exact Logic:\n"
+    "1. Scanning from 9:30 AM\n"
+    "2. Entry at candle Low/High\n"
+    "3. T1 = 2R | Book 50% | Free trade!\n"
+    "4. Auto exit 3:15 PM"
+)
+send_telegram(startup_msg)
+
 updater = Updater(TELEGRAM_TOKEN)
 dp = updater.dispatcher
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
